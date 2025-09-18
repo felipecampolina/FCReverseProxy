@@ -16,26 +16,17 @@ func main() {
 		log.Printf("aviso: não foi possível carregar .env (%v), usando env do sistema", err)
 	}
 
-	// carrega config
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// cria reverse proxy
-	rp := proxy.NewReverseProxy(cfg.TargetURL)
+	rp := proxy.NewReverseProxy(cfg.TargetURL, proxy.NewLRUCache(cfg.Cache.MaxEntries), cfg.Cache.Enabled)
 
-	// rotas
 	mux := http.NewServeMux()
 	mux.Handle("/", rp)
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
 
-	log.Printf("reverse proxy escutando em %s -> %s", cfg.ListenAddr, cfg.TargetURL.String())
-
-	// inicia servidor
+	log.Printf("listening on %s, proxying to %s, cache=%v", cfg.ListenAddr, cfg.TargetURL.String(), cfg.Cache.Enabled)
 	if err := http.ListenAndServe(cfg.ListenAddr, withServerHeaders(mux)); err != nil {
 		log.Fatal(err)
 	}
