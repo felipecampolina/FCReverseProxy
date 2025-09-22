@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -44,6 +45,7 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	start := time.Now() // Start timing the request
 	ctx := r.Context()
 	outreq := r.Clone(ctx)
 	p.directRequest(outreq)
@@ -52,11 +54,33 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if p.cacheOn && isCacheableRequest(outreq) && !clientNoCache(outreq) {
 		key := buildCacheKey(outreq)
 		if cached, ok, stale := p.cache.Get(key); ok && !stale {
+			// Log cache hit
+			logRequestCacheHit(r)
+
 			// Write cached response
 			copyHeader(w.Header(), cached.Header)
 			w.Header().Set("X-Cache", "HIT")
+			// Add/override Age based on when the object was stored
+			age := int(time.Since(cached.StoredAt).Seconds())
+			if age < 0 {
+				age = 0
+			}
+			w.Header().Set("Age", strconv.Itoa(age))
+
 			w.WriteHeader(cached.StatusCode)
 			_, _ = w.Write(cached.Body)
+
+			// Log response
+			logResponseCacheHit(
+				cached.StatusCode,
+				len(cached.Body),
+				time.Since(start),
+				w.Header(),
+				r,
+				w,
+				false, // Not applicable for cache hits
+				"",
+			)
 			return
 		}
 	}
@@ -81,29 +105,48 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	headers := filterHeaders(resp.Header)
+	// Use raw upstream headers for cacheability/TTL decisions,
+	// but sanitize (remove hop-by-hop) for forwarding/storing.
+	rawHeaders := resp.Header.Clone()
+	cleanHeaders := sanitizeResponseHeaders(rawHeaders)
 	status := resp.StatusCode
 
 	// Determine X-Cache header value
 	eligibleReq := p.cacheOn && isCacheableRequest(outreq) && !clientNoCache(outreq)
-	ttl, cacheableResp := isCacheableResponse(respWithBody(status, headers))
+	ttl, cacheableResp := isCacheableResponse(respWithBody(status, rawHeaders))
 	xcache := "BYPASS"
 	if eligibleReq && cacheableResp {
 		xcache = "MISS"
 	}
 
 	// Write headers and body to the client
-	copyHeader(w.Header(), headers)
+	copyHeader(w.Header(), cleanHeaders)
+	// Ensure Content-Length reflects buffered body size if not already set.
+	if _, ok := w.Header()["Content-Length"]; !ok {
+		w.Header().Set("Content-Length", strconv.Itoa(len(buf)))
+	}
 	w.Header().Set("X-Cache", xcache)
 	w.WriteHeader(status)
 	_, _ = w.Write(buf)
+
+	// Log response
+	logResponseCacheHit(
+		status,
+		len(buf),
+		time.Since(start), // Calculate duration dynamically
+		w.Header(),
+		r,
+		w,
+		false, // Not applicable for this case
+		"",
+	)
 
 	// Cache the response if eligible
 	if eligibleReq && cacheableResp {
 		key := buildCacheKey(outreq)
 		p.cache.Set(key, &CachedResponse{
 			StatusCode: status,
-			Header:     headers,
+			Header:     cleanHeaders,
 			Body:       buf,
 			StoredAt:   time.Now(),
 		}, ttl)
@@ -154,6 +197,21 @@ func copyHeader(dst, src http.Header) {
 			dst.Add(k, v)
 		}
 	}
+}
+
+// sanitizeResponseHeaders returns a copy of h without hop-by-hop headers.
+func sanitizeResponseHeaders(h http.Header) http.Header {
+	out := make(http.Header, len(h))
+	for k, vv := range h {
+		// copy values
+		for _, v := range vv {
+			out.Add(k, v)
+		}
+	}
+	for _, hh := range hopHeaders {
+		out.Del(hh)
+	}
+	return out
 }
 
 // Wraps a response with its status and headers.
