@@ -10,8 +10,8 @@ import (
 )
 
 type Config struct {
-	ListenAddr string   // Ex: ":8080"
-	TargetURL  *url.URL // Ex: "http://localhost:9000"
+	ListenAddr string   // Example: ":8080"
+	TargetURL  *url.URL // Example: "http://localhost:9000"
 	Cache      CacheConfig
 }
 
@@ -26,21 +26,21 @@ const (
 	defaultCacheMaxEntrie = 2048
 )
 
-// Load lê variáveis de ambiente e retorna uma Config validada
+// Load reads environment variables and returns a validated Config.
 func Load() (*Config, error) {
 	listen := getEnv("PROXY_LISTEN", defaultListen)
 
 	rawTarget := strings.TrimSpace(os.Getenv("PROXY_TARGET"))
 	if rawTarget == "" {
-		return nil, errors.New("PROXY_TARGET não definido (ex: http://localhost:9000)")
+		return nil, errors.New("PROXY_TARGET is not defined (e.g., http://localhost:9000)")
 	}
 
 	u, err := url.Parse(rawTarget)
 	if err != nil {
-		return nil, fmt.Errorf("PROXY_TARGET inválido: %w", err)
+		return nil, fmt.Errorf("Invalid PROXY_TARGET: %w", err)
 	}
 	if u.Scheme == "" || u.Host == "" {
-		return nil, errors.New("PROXY_TARGET precisa ter esquema e host (ex: http://localhost:9000)")
+		return nil, errors.New("PROXY_TARGET must include scheme and host (e.g., http://localhost:9000)")
 	}
 
 	cacheEnabled := getEnvBool("CACHE_ENABLED", defaultCacheEnabled)
@@ -56,6 +56,7 @@ func Load() (*Config, error) {
 	}, nil
 }
 
+// Retrieves an environment variable or returns the default value.
 func getEnv(key, def string) string {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 		return v
@@ -63,6 +64,7 @@ func getEnv(key, def string) string {
 	return def
 }
 
+// Retrieves a boolean environment variable or returns the default value.
 func getEnvBool(key string, def bool) bool {
 	v := strings.TrimSpace(os.Getenv(key))
 	if v == "" {
@@ -75,6 +77,7 @@ func getEnvBool(key string, def bool) bool {
 	return parsed
 }
 
+// Retrieves an integer environment variable or returns the default value.
 func getEnvInt(key string, def int) int {
 	v := strings.TrimSpace(os.Getenv(key))
 	if v == "" {

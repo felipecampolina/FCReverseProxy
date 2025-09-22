@@ -8,11 +8,9 @@ import (
 	"time"
 )
 
-// CachedResponse guarda o que precisamos para responder sem tocar o upstream.
-// Body é mantido em memória. Para payloads muito grandes, considere um cache em disco.
-//
-// Apenas GET é cacheado neste exemplo.
-
+// CachedResponse stores the necessary data to respond without contacting the upstream.
+// The Body is kept in memory. For large payloads, consider using a disk-based cache.
+// Only GET requests are cached in this example.
 type CachedResponse struct {
 	StatusCode int
 	Header     http.Header
@@ -21,9 +19,8 @@ type CachedResponse struct {
 	ExpiresAt  time.Time
 }
 
-// Cache define as operações básicas do cache.
-// Get retorna (resp, ok, stale). Se stale=true, o item existe mas expirou.
-
+// Cache defines the basic operations for a cache.
+// Get returns (response, ok, stale). If stale=true, the item exists but has expired.
 type Cache interface {
 	Get(key string) (resp *CachedResponse, ok bool, stale bool)
 	Set(key string, resp *CachedResponse, ttl time.Duration)
@@ -40,21 +37,21 @@ type CacheStats struct {
 	Evictions uint64
 }
 
-// lruCache é uma LRU threadsafe simples com TTL por item.
-
+// lruCache is a simple thread-safe LRU cache with TTL per item.
 type lruCache struct {
-	mu           sync.Mutex
-	ll           *list.List
-	items        map[string]*list.Element
-	maxEntries   int
-	stats        CacheStats
+	mu         sync.Mutex
+	ll         *list.List
+	items      map[string]*list.Element
+	maxEntries int
+	stats      CacheStats
 }
 
 type lruEntry struct {
-	key  string
-	val  *CachedResponse
+	key string
+	val *CachedResponse
 }
 
+// Creates a new LRU cache with a maximum number of entries.
 func NewLRUCache(maxEntries int) Cache {
 	if maxEntries <= 0 {
 		maxEntries = 1024
@@ -66,12 +63,13 @@ func NewLRUCache(maxEntries int) Cache {
 	}
 }
 
+// Retrieves a cached response by key.
 func (c *lruCache) Get(key string) (*CachedResponse, bool, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if ele, ok := c.items[key]; ok {
 		ent := ele.Value.(*lruEntry)
-		// move para frente (mais recente)
+		// Move to the front (most recently used)
 		c.ll.MoveToFront(ele)
 		if time.Now().After(ent.val.ExpiresAt) {
 			return ent.val, true, true
@@ -83,9 +81,10 @@ func (c *lruCache) Get(key string) (*CachedResponse, bool, bool) {
 	return nil, false, false
 }
 
+// Stores a response in the cache with a specified TTL.
 func (c *lruCache) Set(key string, resp *CachedResponse, ttl time.Duration) {
 	if ttl <= 0 {
-		// default: 60s se não houver TTL positivo
+		// Default TTL: 60 seconds if no positive TTL is provided
 		ttl = 60 * time.Second
 	}
 	resp.ExpiresAt = time.Now().Add(ttl)
@@ -107,6 +106,7 @@ func (c *lruCache) Set(key string, resp *CachedResponse, ttl time.Duration) {
 	c.stats.Entries = c.ll.Len()
 }
 
+// Removes the oldest entry from the cache.
 func (c *lruCache) removeOldest() {
 	ele := c.ll.Back()
 	if ele != nil {
@@ -114,6 +114,7 @@ func (c *lruCache) removeOldest() {
 	}
 }
 
+// Removes a specific element from the cache.
 func (c *lruCache) removeElement(e *list.Element) {
 	c.ll.Remove(e)
 	ent := e.Value.(*lruEntry)
@@ -121,6 +122,7 @@ func (c *lruCache) removeElement(e *list.Element) {
 	c.stats.Evictions++
 }
 
+// Deletes a specific key from the cache.
 func (c *lruCache) Delete(key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -130,6 +132,7 @@ func (c *lruCache) Delete(key string) {
 	}
 }
 
+// Clears all entries from the cache.
 func (c *lruCache) Purge() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -138,14 +141,16 @@ func (c *lruCache) Purge() {
 	c.stats.Entries = 0
 }
 
+// Returns cache statistics.
 func (c *lruCache) Stats() CacheStats {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.stats
 }
 
-// ===== Helpers de cache HTTP =====
+// ===== HTTP Cache Helpers =====
 
+// Headers that should not be cached (hop-by-hop headers).
 var hopHeaders = []string{
 	"Connection",
 	"Keep-Alive",
@@ -157,7 +162,7 @@ var hopHeaders = []string{
 	"Upgrade",
 }
 
-// isCacheableRequest: apenas GET e sem no-store/no-cache explícito.
+// Determines if a request is cacheable (only GET requests without no-store/no-cache directives).
 func isCacheableRequest(r *http.Request) bool {
 	if r.Method != http.MethodGet {
 		return false
@@ -169,7 +174,7 @@ func isCacheableRequest(r *http.Request) bool {
 	if _, ok := cc["no-cache"]; ok {
 		return false
 	}
-	// Heurística: se tem Authorization, evite cachear (a não ser que explicitamente permitido)
+	// Heuristic: avoid caching if Authorization is present unless explicitly allowed
 	if r.Header.Get("Authorization") != "" {
 		if _, pub := cc["public"]; !pub {
 			return false
@@ -178,12 +183,12 @@ func isCacheableRequest(r *http.Request) bool {
 	return true
 }
 
-// isCacheableResponse valida diretivas básicas de resposta.
+// Validates if a response is cacheable based on basic directives.
 func isCacheableResponse(resp *http.Response) (ttl time.Duration, ok bool) {
-	// status simples
+	// Simple status validation
 	switch resp.StatusCode {
 	case 200, 203, 204, 300, 301, 404, 410:
-		// ok
+		// Cacheable statuses
 	default:
 		return 0, false
 	}
@@ -202,7 +207,7 @@ func isCacheableResponse(resp *http.Response) (ttl time.Duration, ok bool) {
 			return d, true
 		}
 	}
-	// Expires
+	// Expires header
 	if exp := resp.Header.Get("Expires"); exp != "" {
 		if t, err := http.ParseTime(exp); err == nil {
 			if t.After(time.Now()) {
@@ -210,11 +215,11 @@ func isCacheableResponse(resp *http.Response) (ttl time.Duration, ok bool) {
 			}
 		}
 	}
-	// heurística default (60s)
+	// Default heuristic TTL (60 seconds)
 	return 60 * time.Second, true
 }
 
-// parseCacheControl simples: converte para map[directive]value. Diretivas sem valor retornam "" e true.
+// Parses Cache-Control headers into a map of directives.
 func parseCacheControl(v string) map[string]string {
 	m := make(map[string]string)
 	if v == "" {
@@ -223,7 +228,9 @@ func parseCacheControl(v string) map[string]string {
 	parts := strings.Split(v, ",")
 	for _, p := range parts {
 		p = strings.TrimSpace(p)
-		if p == "" { continue }
+		if p == "" {
+			continue
+		}
 		kv := strings.SplitN(p, "=", 2)
 		k := strings.ToLower(strings.TrimSpace(kv[0]))
 		if len(kv) == 2 {
@@ -235,7 +242,7 @@ func parseCacheControl(v string) map[string]string {
 	return m
 }
 
-// buildCacheKey gera uma chave determinística.
+// Generates a deterministic cache key for a request.
 func buildCacheKey(r *http.Request) string {
 	b := strings.Builder{}
 	b.WriteString(r.Method)
@@ -255,11 +262,11 @@ func buildCacheKey(r *http.Request) string {
 	return b.String()
 }
 
-// filterHeaders remove hop-by-hop e outros cabeçalhos que não devem ser reusados do cache.
+// Filters headers to remove hop-by-hop and other non-cacheable headers.
 func filterHeaders(h http.Header) http.Header {
 	out := make(http.Header, len(h))
 	for k, vv := range h {
-		// remove hop-by-hop
+		// Remove hop-by-hop headers
 		remove := false
 		for _, hh := range hopHeaders {
 			if strings.EqualFold(k, hh) {
@@ -267,7 +274,9 @@ func filterHeaders(h http.Header) http.Header {
 				break
 			}
 		}
-		if remove { continue }
+		if remove {
+			continue
+		}
 		for _, v := range vv {
 			out.Add(k, v)
 		}
