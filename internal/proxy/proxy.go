@@ -5,61 +5,109 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
 
 type ReverseProxy struct {
-	target     *url.URL
-	transport  *http.Transport
-	cache      Cache
-	cacheOn    bool
+	target    *url.URL
+	transport *http.Transport
+	cache     Cache
+	cacheOn   bool
+	// handler is the effective handler (optionally wrapped with queue.WithQueue).
+	handler http.Handler
 }
 
+// Creates a new ReverseProxy instance with the specified target, cache, and cache toggle.
 func NewReverseProxy(target *url.URL, cache Cache, cacheOn bool) *ReverseProxy {
 	tr := &http.Transport{
-		Proxy:               http.ProxyFromEnvironment,
-		DialContext:         (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-		ForceAttemptHTTP2:   true,
-		MaxIdleConns:        100,
-		IdleConnTimeout:     90 * time.Second,
-		TLSHandshakeTimeout: 10 * time.Second,
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
-	return &ReverseProxy{
-		target:     target,
+	p := &ReverseProxy{
+		target:    target,
 		transport: tr,
 		cache:     cache,
 		cacheOn:   cacheOn,
 	}
+	// default handler (queued wrapper may be added later); upstream only.
+	p.handler = http.HandlerFunc(p.serveUpstream)
+	return p
 }
 
+// Enable bounded queue + concurrency cap by wrapping with queue.WithQueue (only used on upstream path).
+func (p *ReverseProxy) WithQueue(cfg QueueConfig) *ReverseProxy {
+	p.handler = WithQueue(http.HandlerFunc(p.serveUpstream), cfg)
+	return p
+}
+
+// Handles incoming HTTP requests and routes them to the appropriate target.
 func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// health em memória
+	// Health check endpoint (bypass queue)
 	if r.URL.Path == "/healthz" {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 		return
 	}
 
+	// Perform cache-hit check BEFORE queue so hits never wait.
+	start := time.Now()
+	if p.cacheOn && r != nil {
+		outreq := r.Clone(r.Context())
+		p.directRequest(outreq)
+		if isCacheableRequest(outreq) && !clientNoCache(outreq) {
+			key := buildCacheKey(outreq)
+			if cached, ok, stale := p.cache.Get(key); ok && !stale {
+				// Log cache hit
+				logRequestCacheHit(r)
+
+				// Write cached response
+				copyHeader(w.Header(), cached.Header)
+				w.Header().Set("X-Cache", "HIT")
+				// Add/override Age based on when the object was stored
+				age := int(time.Since(cached.StoredAt).Seconds())
+				if age < 0 {
+					age = 0
+				}
+				w.Header().Set("Age", strconv.Itoa(age))
+
+				w.WriteHeader(cached.StatusCode)
+				_, _ = w.Write(cached.Body)
+
+				// Log response
+				logResponseCacheHit(
+					cached.StatusCode,
+					len(cached.Body),
+					time.Since(start),
+					w.Header(),
+					r,
+					w,
+					false,
+					"",
+				)
+				return
+			}
+		}
+	}
+
+	// Cache miss/bypass: go through the (possibly queued) upstream handler.
+	p.handler.ServeHTTP(w, r)
+}
+
+// Core upstream path (no cache-hit logic; queue may wrap this).
+func (p *ReverseProxy) serveUpstream(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
 	ctx := r.Context()
 	outreq := r.Clone(ctx)
 	p.directRequest(outreq)
 
-	// Bypass cache por diretiva do cliente
-	if p.cacheOn && isCacheableRequest(outreq) && !clientNoCache(outreq) {
-		key := buildCacheKey(outreq)
-		if cached, ok, stale := p.cache.Get(key); ok && !stale {
-			// write cached response; set header before writing
-			copyHeader(w.Header(), cached.Header)
-			w.Header().Set("X-Cache", "HIT")
-			w.WriteHeader(cached.StatusCode)
-			_, _ = w.Write(cached.Body)
-			return
-		}
-	}
-
-	// Sem cache (miss/bypass): chama upstream
+	// Forward request to upstream
 	resp, err := p.transport.RoundTrip(outreq)
 	if err != nil {
 		select {
@@ -72,56 +120,73 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	// Copia resposta para cliente e (talvez) para o cache
+	// Copy response to client and optionally cache it
 	buf, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
 		http.Error(w, readErr.Error(), http.StatusBadGateway)
 		return
 	}
-
-	// Filtra cabeçalhos
-	headers := filterHeaders(resp.Header)
+	// Use raw upstream headers for cacheability/TTL decisions,
+	// but sanitize (remove hop-by-hop) for forwarding/storing.
+	rawHeaders := resp.Header.Clone()
+	cleanHeaders := sanitizeResponseHeaders(rawHeaders)
 	status := resp.StatusCode
 
-	// Decide cabeçalho X-Cache antes de escrever
+	// Determine X-Cache header value
 	eligibleReq := p.cacheOn && isCacheableRequest(outreq) && !clientNoCache(outreq)
-	ttl, cacheableResp := isCacheableResponse(respWithBody(status, headers))
+	ttl, cacheableResp := isCacheableResponse(respWithBody(status, rawHeaders))
 	xcache := "BYPASS"
 	if eligibleReq && cacheableResp {
 		xcache = "MISS"
 	}
 
-	// Escreve cabeçalhos e corpo
-	copyHeader(w.Header(), headers)
+	// Write headers and body to the client
+	copyHeader(w.Header(), cleanHeaders)
+	// Ensure Content-Length reflects buffered body size if not already set
+	if _, ok := w.Header()["Content-Length"]; !ok {
+		w.Header().Set("Content-Length", strconv.Itoa(len(buf)))
+	}
 	w.Header().Set("X-Cache", xcache)
 	w.WriteHeader(status)
 	_, _ = w.Write(buf)
 
-	// Decide cachear
+	// Log response
+	logResponseCacheHit(
+		status,
+		len(buf),
+		time.Since(start),
+		w.Header(),
+		r,
+		w,
+		false, // Not applicable for this case
+		"",
+	)
+
+	// Cache the response if eligible (on MISS)
 	if eligibleReq && cacheableResp {
 		key := buildCacheKey(outreq)
 		p.cache.Set(key, &CachedResponse{
 			StatusCode: status,
-			Header:     headers,
+			Header:     cleanHeaders,
 			Body:       buf,
 			StoredAt:   time.Now(),
 		}, ttl)
 	}
 }
 
-// directRequest reescreve a URL, caminho e cabeçalhos hop-by-hop
+// Rewrites the request URL, path, and hop-by-hop headers.
 func (p *ReverseProxy) directRequest(outreq *http.Request) {
-	// Rewrite da URL
+	// Rewrite URL
 	outreq.URL.Scheme = p.target.Scheme
 	outreq.URL.Host = p.target.Host
 	outreq.URL.Path = singleJoiningSlash(p.target.Path, outreq.URL.Path)
-	// mantém query string
 
-	// Remove hop-by-hop
+	// Remove hop-by-hop headers
 	for _, h := range hopHeaders {
 		outreq.Header.Del(h)
 	}
-	// X-Forwarded-* e Host
+
+	// Set X-Forwarded-* headers and Host
 	if clientIP, _, err := net.SplitHostPort(outreq.RemoteAddr); err == nil && clientIP != "" {
 		xf := outreq.Header.Get("X-Forwarded-For")
 		if xf == "" {
@@ -132,9 +197,10 @@ func (p *ReverseProxy) directRequest(outreq *http.Request) {
 	}
 	outreq.Header.Set("X-Forwarded-Proto", schemeOf(outreq))
 	outreq.Header.Set("X-Forwarded-Host", outreq.Host)
-	outreq.Host = p.target.Host // encaminha como Host do upstream
+	outreq.Host = p.target.Host
 }
 
+// Determines the scheme of the request (http or https).
 func schemeOf(r *http.Request) string {
 	if r.TLS != nil {
 		return "https"
@@ -145,6 +211,7 @@ func schemeOf(r *http.Request) string {
 	return "http"
 }
 
+// Copies headers from the source to the destination.
 func copyHeader(dst, src http.Header) {
 	for k, vv := range src {
 		for _, v := range vv {
@@ -153,18 +220,42 @@ func copyHeader(dst, src http.Header) {
 	}
 }
 
+// sanitizeResponseHeaders returns a copy of h without hop-by-hop headers.
+func sanitizeResponseHeaders(h http.Header) http.Header {
+	out := make(http.Header, len(h))
+	for k, vv := range h {
+		// copy values
+		for _, v := range vv {
+			out.Add(k, v)
+		}
+	}
+	for _, hh := range hopHeaders {
+		out.Del(hh)
+	}
+	return out
+}
+
+// Wraps a response with its status and headers.
 func respWithBody(status int, header http.Header) *http.Response {
 	return &http.Response{StatusCode: status, Header: header}
 }
 
+// Checks if the client explicitly requested no-cache.
 func clientNoCache(r *http.Request) bool {
 	cc := parseCacheControl(r.Header.Get("Cache-Control"))
-	if _, ok := cc["no-cache"]; ok { return true }
-	if _, ok := cc["no-store"]; ok { return true }
-	if strings.EqualFold(r.Header.Get("Pragma"), "no-cache") { return true }
+	if _, ok := cc["no-cache"]; ok {
+		return true
+	}
+	if _, ok := cc["no-store"]; ok {
+		return true
+	}
+	if strings.EqualFold(r.Header.Get("Pragma"), "no-cache") {
+		return true
+	}
 	return false
 }
 
+// Joins two paths with a single slash.
 func singleJoiningSlash(a, b string) string {
 	aslash := strings.HasSuffix(a, "/")
 	bslash := strings.HasPrefix(b, "/")
@@ -177,3 +268,4 @@ func singleJoiningSlash(a, b string) string {
 		return a + b
 	}
 }
+
