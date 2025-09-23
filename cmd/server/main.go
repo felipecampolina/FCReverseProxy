@@ -31,10 +31,13 @@ func main() {
 	// Queue configuration comes from config
 	qcfg := cfg.Queue
 
+	// Attach queue to proxy (only used for cache misses)
+	rp = rp.WithQueue(qcfg)
+
 	// Set up the HTTP server
 	mux := http.NewServeMux()
-	// Wrap the reverse proxy with the queue middleware
-	mux.Handle("/", proxy.WithQueue(rp, qcfg))
+	// Register the proxy directly; queue is applied internally only on cache misses
+	mux.Handle("/", rp)
 
 	// Health endpoint (bypass queue to always respond quickly)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
