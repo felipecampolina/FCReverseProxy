@@ -22,13 +22,29 @@ func main() {
 	}
 
 	// Initialize the reverse proxy with cache
-	rp := proxy.NewReverseProxy(cfg.TargetURL, proxy.NewLRUCache(cfg.Cache.MaxEntries), cfg.Cache.Enabled)
+	rp := proxy.NewReverseProxy(
+		cfg.TargetURL,
+		proxy.NewLRUCache(cfg.Cache.MaxEntries),
+		cfg.Cache.Enabled,
+	)
+
+	// Queue configuration comes from config
+	qcfg := cfg.Queue
 
 	// Set up the HTTP server
 	mux := http.NewServeMux()
-	mux.Handle("/", rp)
+	// Wrap the reverse proxy with the queue middleware
+	mux.Handle("/", proxy.WithQueue(rp, qcfg))
 
-	log.Printf("Listening on %s, proxying to %s, cache enabled: %v", cfg.ListenAddr, cfg.TargetURL.String(), cfg.Cache.Enabled)
+	// Health endpoint (bypass queue to always respond quickly)
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
+
+	log.Printf("Listening on %s, proxying to %s, cache enabled: %v, queue max=%d, concurrent=%d",
+		cfg.ListenAddr, cfg.TargetURL.String(), cfg.Cache.Enabled, qcfg.MaxQueue, qcfg.MaxConcurrent)
+
 	if err := http.ListenAndServe(cfg.ListenAddr, withServerHeaders(mux)); err != nil {
 		log.Fatal(err)
 	}

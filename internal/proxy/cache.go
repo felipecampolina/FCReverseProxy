@@ -261,25 +261,3 @@ func buildCacheKey(r *http.Request) string {
 	b.WriteString(strings.TrimSpace(r.Header.Get("Accept-Encoding")))
 	return b.String()
 }
-
-// Filters headers to remove hop-by-hop and other non-cacheable headers.
-func filterHeaders(h http.Header) http.Header {
-	out := make(http.Header, len(h))
-	for k, vv := range h {
-		// Remove hop-by-hop headers
-		remove := false
-		for _, hh := range hopHeaders {
-			if strings.EqualFold(k, hh) {
-				remove = true
-				break
-			}
-		}
-		if remove {
-			continue
-		}
-		for _, v := range vv {
-			out.Add(k, v)
-		}
-	}
-	return out
-}
