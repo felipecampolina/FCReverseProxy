@@ -1,13 +1,25 @@
 package proxy
 
 import (
+	"flag"
 	"log"
 	"net/http"
 	"time"
 )
 
+func logEnabled() bool {
+	// In test binaries, the testing package registers these flags.
+	if flag.Lookup("test.v") != nil || flag.Lookup("test.run") != nil || flag.Lookup("test.bench") != nil {
+		return false
+	}
+	return true
+}
+
 // LogCacheHit logs details of a cache hit in the same pattern as upstream server logs.
 func logRequestCacheHit(r *http.Request) {
+	if !logEnabled() {
+		return
+	}
 	log.Printf(
 		"REQ remote=%s method=%s url=%s proto=%s req-content-length=%s headers=%v | CACHE HIT",
 		r.RemoteAddr,
@@ -21,6 +33,9 @@ func logRequestCacheHit(r *http.Request) {
 
 // LogResponse logs details of a response in the specified pattern.
 func logResponseCacheHit(status int, bytes int, dur time.Duration, respHeaders http.Header, req *http.Request, resp http.ResponseWriter, notModified bool, respBodyNote string) {
+	if !logEnabled() {
+		return
+	}
 	log.Printf(
 		"RESP status=%d bytes=%d dur=%s resp-content-length=%s resp_headers=%v | cache:req_cc=%v resp_cc=%v etag=%q last-modified=%q expires=%q age=%q via=%q x-cache=%q not-modified=%t%s",
 		status,

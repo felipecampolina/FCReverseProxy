@@ -158,7 +158,7 @@ func (p *ReverseProxy) serveUpstream(w http.ResponseWriter, r *http.Request) {
 		w.Header(),
 		r,
 		w,
-		false,// Not applicable for this case
+		false, // Not applicable for this case
 		"",
 	)
 

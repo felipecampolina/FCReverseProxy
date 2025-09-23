@@ -10,13 +10,12 @@ import (
 )
 
 type QueueConfig struct {
-	MaxQueue        int           // max number of requests allowed to wait (FIFO)
-	MaxConcurrent   int           // max number of concurrent requests hitting upstream
-	EnqueueTimeout  time.Duration // how long a request is willing to wait to ENTER the queue
-	QueueWaitHeader bool          // emit X-Queue-* headers
+	MaxQueue        int
+	MaxConcurrent   int
+	EnqueueTimeout  time.Duration
+	QueueWaitHeader bool
 }
 
-// WithQueue wraps an http.Handler with a bounded FIFO waiting queue + concurrency cap.
 func WithQueue(next http.Handler, cfg QueueConfig) http.Handler {
 	if cfg.MaxQueue <= 0 {
 		cfg.MaxQueue = 1024
@@ -28,46 +27,85 @@ func WithQueue(next http.Handler, cfg QueueConfig) http.Handler {
 		cfg.EnqueueTimeout = 2 * time.Second
 	}
 
-	queueSlots := make(chan struct{}, cfg.MaxQueue)  // who is allowed to wait
-	active := make(chan struct{}, cfg.MaxConcurrent) // who is allowed to run
-	var depth int64                                  // fast path for depth metric/header
+	waiters := make(chan struct{}, cfg.MaxQueue)      // queued-only
+	active := make(chan struct{}, cfg.MaxConcurrent)  // running
+
+	var depth int64 // queued depth only
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
-		// Try to ENTER the queue within EnqueueTimeout.
-		ctx, cancel := context.WithTimeout(r.Context(), cfg.EnqueueTimeout)
-		defer cancel()
-
+		// Try to enter the queue (queued-only). If full -> 429.
 		select {
-		case queueSlots <- struct{}{}:
-			// we are allowed to wait; track depth
-			newDepth := atomic.AddInt64(&depth, 1)
-			defer func() {
-				<-queueSlots
-				atomic.AddInt64(&depth, -1)
-			}()
-			// While queued, continue observing caller cancellation
-			select {
-			case active <- struct{}{}: // reached front of queue and got an active slot
-				defer func() { <-active }()
-				if cfg.QueueWaitHeader {
-					w.Header().Set("X-Concurrency-Limit", strconv.Itoa(cfg.MaxConcurrent))
-					w.Header().Set("X-Queue-Limit", strconv.Itoa(cfg.MaxQueue))
-					w.Header().Set("X-Queue-Depth", strconv.FormatInt(newDepth, 10))
-					w.Header().Set("X-Queue-Wait", time.Since(start).String())
-				}
-				// hand off to the actual handler (proxy)
-				next.ServeHTTP(w, r)
-			case <-r.Context().Done():
-				failQueue(w, r.Context().Err())
-				return
-			}
-		case <-ctx.Done():
-			// Could not even ENTER the queue in time (full/slow). Return 429 to signal backoff.
+		case waiters <- struct{}{}:
+			// ok
+		default:
 			http.Error(w, "queue full, try again later", http.StatusTooManyRequests)
 			return
 		}
+
+		queued := true
+		newDepth := atomic.AddInt64(&depth, 1)
+		defer func() {
+			if queued {
+				<-waiters
+				atomic.AddInt64(&depth, -1)
+			}
+		}()
+
+		// Race slot acquisition against timeout/cancel with deterministic priority.
+		// We use a goroutine that *only* tries to acquire the active slot and is cancelable.
+		ctx := r.Context()
+		queueCtx, cancelAcquire := context.WithCancel(ctx)
+		defer cancelAcquire()
+
+		slotCh := make(chan struct{}, 1)
+		go func() {
+			// Try to acquire active unless canceled.
+			select {
+			case active <- struct{}{}:
+				slotCh <- struct{}{}
+			case <-queueCtx.Done():
+				// canceled (timeout or client cancel) — do not acquire
+			}
+		}()
+
+		timer := time.NewTimer(cfg.EnqueueTimeout)
+		defer timer.Stop()
+
+		select {
+		case <-ctx.Done():
+			// Client canceled while queued
+			cancelAcquire() // ensure acquire goroutine stops
+			failQueue(w, ctx.Err())
+			return
+
+		case <-timer.C:
+			// Timed out while queued
+			cancelAcquire() // ensure acquire goroutine stops
+			failQueue(w, context.DeadlineExceeded)
+			return
+
+		case <-slotCh:
+			// We got an active slot *before* timeout/cancel.
+		}
+
+		// Leave the queue now that we're active.
+		<-waiters
+		atomic.AddInt64(&depth, -1)
+		queued = false
+
+		// Release active when done serving.
+		defer func() { <-active }()
+
+		if cfg.QueueWaitHeader {
+			w.Header().Set("X-Concurrency-Limit", strconv.Itoa(cfg.MaxConcurrent))
+			w.Header().Set("X-Queue-Limit", strconv.Itoa(cfg.MaxQueue))
+			w.Header().Set("X-Queue-Depth", strconv.FormatInt(newDepth, 10))
+			w.Header().Set("X-Queue-Wait", time.Since(start).String())
+		}
+
+		next.ServeHTTP(w, r)
 	})
 }
 
