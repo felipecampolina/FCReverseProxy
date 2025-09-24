@@ -27,6 +27,7 @@ func main() {
 		proxy.NewLRUCache(cfg.Cache.MaxEntries),
 		cfg.Cache.Enabled,
 	)
+	rp.SetAllowedMethods(cfg.AllowedMethods)
 
 	// Queue configuration comes from config
 	qcfg := cfg.Queue

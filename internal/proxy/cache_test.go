@@ -306,3 +306,79 @@ func TestCache_HEAD_Hit(t *testing.T) {
 		t.Fatalf("expected HIT for second HEAD, got %q", xc)
 	}
 }
+
+func TestDisallowedMethod_NoCacheInteraction(t *testing.T) {
+	var upstreamHits int64
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&upstreamHits, 1)
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(200)
+	}))
+	t.Cleanup(up.Close)
+
+	u, _ := url.Parse(up.URL)
+	cache := proxy.NewLRUCache(128)
+
+	rp := proxy.NewReverseProxy(u, cache, true)
+	rp.SetAllowedMethods([]string{"GET"}) // Only GET allowed
+
+	req := httptest.NewRequest("POST", "/x", nil)
+	w := httptest.NewRecorder()
+	rp.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", w.Code)
+	}
+	if atomic.LoadInt64(&upstreamHits) != 0 {
+		t.Fatalf("upstream should not have been called for disallowed method")
+	}
+	if v := w.Header().Get("X-Cache"); v != "" {
+		t.Fatalf("did not expect X-Cache header on disallowed method, got %q", v)
+	}
+	if allow := w.Header().Get("Allow"); allow != "GET" {
+		t.Fatalf("expected Allow header with GET, got %q", allow)
+	}
+}
+
+// Ensures allowed method still leverages cache (MISS then HIT) under method restriction.
+func TestAllowedMethod_CacheWorksWithRestriction(t *testing.T) {
+	var upstreamHits int64
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&upstreamHits, 1)
+		w.Header().Set("Cache-Control", "public, max-age=120")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(up.Close)
+
+	u, _ := url.Parse(up.URL)
+	cache := proxy.NewLRUCache(128)
+
+	rp := proxy.NewReverseProxy(u, cache, true)
+	rp.SetAllowedMethods([]string{"GET"}) // Only GET allowed
+
+	// First GET (MISS)
+	r1 := httptest.NewRequest("GET", "/", nil)
+	w1 := httptest.NewRecorder()
+	rp.ServeHTTP(w1, r1)
+	if w1.Code != 200 {
+		t.Fatalf("want 200, got %d", w1.Code)
+	}
+	if xc := w1.Header().Get("X-Cache"); xc != "MISS" {
+		t.Fatalf("expected X-Cache=MISS, got %q", xc)
+	}
+
+	// Second GET (HIT)
+	r2 := httptest.NewRequest("GET", "/", nil)
+	w2 := httptest.NewRecorder()
+	rp.ServeHTTP(w2, r2)
+	if w2.Code != 200 {
+		t.Fatalf("want 200, got %d", w2.Code)
+	}
+	if xc := w2.Header().Get("X-Cache"); xc != "HIT" {
+		t.Fatalf("expected X-Cache=HIT, got %q", xc)
+	}
+	if atomic.LoadInt64(&upstreamHits) != 1 {
+		t.Fatalf("expected 1 upstream hit, got %d", upstreamHits)
+	}
+}

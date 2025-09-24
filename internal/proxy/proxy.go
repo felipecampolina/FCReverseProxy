@@ -9,18 +9,20 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
 
 type ReverseProxy struct {
-	target    *url.URL
-	transport *http.Transport
-	cache     Cache
-	cacheOn   bool
+	target         *url.URL
+	transport      *http.Transport
+	cache          Cache
+	cacheOn        bool
 	// handler is the effective handler (optionally wrapped with queue.WithQueue).
 	handler http.Handler
+	allowedMethods map[string]struct{}
 }
 
 // Creates a new ReverseProxy instance with the specified target, cache, and cache toggle.
@@ -51,6 +53,32 @@ func (p *ReverseProxy) WithQueue(cfg QueueConfig) *ReverseProxy {
 	return p
 }
 
+// SetAllowedMethods configures which HTTP methods are permitted (empty slice => allow all).
+func (p *ReverseProxy) SetAllowedMethods(methods []string) {
+	if len(methods) == 0 {
+		p.allowedMethods = nil
+		return
+	}
+	m := make(map[string]struct{}, len(methods))
+	for _, meth := range methods {
+		m[strings.ToUpper(strings.TrimSpace(meth))] = struct{}{}
+	}
+	p.allowedMethods = m
+}
+
+// listAllowedMethods returns a sorted slice (used for Allow header).
+func (p *ReverseProxy) listAllowedMethods() []string {
+	if p.allowedMethods == nil {
+		return nil
+	}
+	out := make([]string, 0, len(p.allowedMethods))
+	for k := range p.allowedMethods {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // Handles incoming HTTP requests and routes them to the appropriate target.
 func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Health check endpoint (bypass queue)
@@ -58,6 +86,17 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 		return
+	}
+
+	// Enforce allowed methods (after health check).
+	if p.allowedMethods != nil {
+		if _, ok := p.allowedMethods[r.Method]; !ok {
+			if allow := p.listAllowedMethods(); len(allow) > 0 {
+				w.Header().Set("Allow", strings.Join(allow, ", "))
+			}
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 	}
 
 	// Perform cache-hit check BEFORE queue so hits never wait.

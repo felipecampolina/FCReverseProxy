@@ -12,10 +12,11 @@ import (
 )
 
 type Config struct {
-	ListenAddr string   // Example: ":8080"
-	TargetURL  *url.URL // Example: "http://localhost:9000"
-	Cache      CacheConfig
-	Queue      proxy.QueueConfig
+	ListenAddr    string   // Example: ":8080"
+	TargetURL     *url.URL // Example: "http://localhost:9000"
+	Cache         CacheConfig
+	Queue         proxy.QueueConfig
+	AllowedMethods []string
 }
 
 type CacheConfig struct {
@@ -38,6 +39,7 @@ const (
 	defaultQueueMaxConcurrent  = 100
 	defaultQueueEnqueueTimeout = 2 * time.Second
 	defaultQueueWaitHeader     = true
+	defaultAllowedMethods      = "GET,HEAD,POST,PUT,PATCH,DELETE"
 )
 
 // Load reads environment variables and returns a validated Config.
@@ -68,6 +70,9 @@ func Load() (*Config, error) {
 		QueueWaitHeader: getEnvBool("RP_QUEUE_WAIT_HEADER", defaultQueueWaitHeader),
 	}
 
+	allowedRaw := getEnv("ALOW_REQUEST_TYPE", defaultAllowedMethods)
+	allowed := parseMethods(allowedRaw)
+
 	return &Config{
 		ListenAddr: listen,
 		TargetURL:  u,
@@ -75,7 +80,8 @@ func Load() (*Config, error) {
 			Enabled:    cacheEnabled,
 			MaxEntries: cacheMax,
 		},
-		Queue: q,
+		Queue:          q,
+		AllowedMethods: allowed,
 	}, nil
 }
 
@@ -123,4 +129,27 @@ func getEnvDuration(key string, def time.Duration) time.Duration {
 		return def
 	}
 	return d
+}
+
+// parseMethods converts comma-separated methods to upper-case slice.
+func parseMethods(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, p := range parts {
+		m := strings.ToUpper(strings.TrimSpace(p))
+		if m == "" {
+			continue
+		}
+		if _, ok := seen[m]; ok {
+			continue
+		}
+		seen[m] = struct{}{
+		}
+		out = append(out, m)
+	}
+	return out
 }
