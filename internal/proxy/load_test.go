@@ -11,8 +11,9 @@ import (
 	"traefik-challenge-2/internal/proxy"
 )
 
-// This is a stress-style test to exercise high volume under queueing.
 func TestHighVolume(t *testing.T) {
+	banner("load_test.go")
+
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(50 * time.Millisecond)
 		w.WriteHeader(200)
@@ -57,6 +58,10 @@ func TestHighVolume(t *testing.T) {
 	if other != 0 {
 		t.Fatalf("unexpected statuses seen: %d", other)
 	}
+	if ok == 0 {
+		t.Fatalf("no successful responses; expected some to pass through")
+	}
+
 	if ok == 0 {
 		t.Fatalf("no successful responses; expected some to pass through")
 	}

@@ -21,12 +21,13 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Initialize the reverse proxy with cache
-	rp := proxy.NewReverseProxy(
-		cfg.TargetURL,
-		proxy.NewLRUCache(cfg.Cache.MaxEntries),
-		cfg.Cache.Enabled,
-	)
+	var rp *proxy.ReverseProxy
+	if len(cfg.TargetURLs) > 1 {
+		rp = proxy.NewReverseProxyMulti(cfg.TargetURLs, proxy.NewLRUCache(cfg.Cache.MaxEntries), cfg.Cache.Enabled)
+	} else {
+		rp = proxy.NewReverseProxy(cfg.TargetURL, proxy.NewLRUCache(cfg.Cache.MaxEntries), cfg.Cache.Enabled)
+	}
+	rp.ConfigureBalancer(cfg.LoadBalancerStrategy)
 	rp.SetAllowedMethods(cfg.AllowedMethods)
 
 	// Queue configuration comes from config
@@ -40,14 +41,21 @@ func main() {
 	// Register the proxy directly; queue is applied internally only on cache misses
 	mux.Handle("/", rp)
 
-	// Health endpoint (bypass queue to always respond quickly)
+	// Health endpoint (no upstream involved, so do not set X-Upstream)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
 
-	log.Printf("Listening on %s, proxying to %s, cache enabled: %v, queue max=%d, concurrent=%d",
-		cfg.ListenAddr, cfg.TargetURL.String(), cfg.Cache.Enabled, qcfg.MaxQueue, qcfg.MaxConcurrent)
+	log.Printf("Listening on %s, upstreams=%d primary=%s lb=%s cache=%v queue(max=%d,concurrent=%d)",
+		cfg.ListenAddr,
+		len(cfg.TargetURLs),
+		cfg.TargetURL.String(),
+		cfg.LoadBalancerStrategy,
+		cfg.Cache.Enabled,
+		qcfg.MaxQueue,
+		qcfg.MaxConcurrent,
+	)
 
 	if err := http.ListenAndServe(cfg.ListenAddr, withServerHeaders(mux)); err != nil {
 		log.Fatal(err)

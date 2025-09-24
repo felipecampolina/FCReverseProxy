@@ -15,6 +15,7 @@ import (
 )
 
 func TestQueue_ConcurrencyLimitAndQueueing(t *testing.T) {
+	banner("queue_test.go")
 	var concurrent int64
 	var peak int64
 	// upstream that sleeps and tracks concurrency
@@ -82,6 +83,7 @@ func TestQueue_ConcurrencyLimitAndQueueing(t *testing.T) {
 }
 
 func TestQueue_TimeoutWhileWaiting(t *testing.T) {
+	banner("queue_test.go")
     started := make(chan struct{})
     var once sync.Once
 
@@ -118,6 +120,8 @@ func TestQueue_TimeoutWhileWaiting(t *testing.T) {
 }
 
 func TestQueue_ClientCancellationWhileQueued(t *testing.T) {
+	banner("queue_test.go")
+
     started := make(chan struct{})
     var once sync.Once
 

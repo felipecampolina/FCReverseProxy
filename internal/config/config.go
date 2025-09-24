@@ -12,11 +12,13 @@ import (
 )
 
 type Config struct {
-	ListenAddr    string   // Example: ":8080"
-	TargetURL     *url.URL // Example: "http://localhost:9000"
-	Cache         CacheConfig
-	Queue         proxy.QueueConfig
-	AllowedMethods []string
+	ListenAddr            string    // Example: ":8080"
+	TargetURL             *url.URL  // First (primary) target for backward compatibility
+	TargetURLs            []*url.URL // All targets (>=1)
+	Cache                 CacheConfig
+	Queue                 proxy.QueueConfig
+	AllowedMethods        []string
+	LoadBalancerStrategy  string // "rr" (default) or "least_conn"
 }
 
 type CacheConfig struct {
@@ -46,18 +48,42 @@ const (
 func Load() (*Config, error) {
 	listen := getEnv("PROXY_LISTEN", defaultListen)
 
-	rawTarget := strings.TrimSpace(os.Getenv("PROXY_TARGET"))
-	if rawTarget == "" {
-		return nil, errors.New("PROXY_TARGET is not defined (e.g., http://localhost:9000)")
+	rawTargets := strings.TrimSpace(os.Getenv("PROXY_TARGETS"))
+	var targets []*url.URL
+
+	if rawTargets != "" {
+		parts := strings.Split(rawTargets, ",")
+		for _, p := range parts {
+			pt := strings.TrimSpace(p)
+			if pt == "" {
+				continue
+			}
+			u, err := url.Parse(pt)
+			if err != nil || u.Scheme == "" || u.Host == "" {
+				return nil, fmt.Errorf("invalid entry in PROXY_TARGETS: %q", pt)
+			}
+			targets = append(targets, u)
+		}
+		if len(targets) == 0 {
+			return nil, errors.New("PROXY_TARGETS provided but no valid URLs parsed")
+		}
+	} else {
+		// Fallback to single PROXY_TARGET (existing behavior)
+		rawTarget := strings.TrimSpace(os.Getenv("PROXY_TARGET"))
+		if rawTarget == "" {
+			return nil, errors.New("PROXY_TARGET or PROXY_TARGETS must be defined (e.g., http://localhost:9000)")
+		}
+		u, err := url.Parse(rawTarget)
+		if err != nil {
+			return nil, fmt.Errorf("invalid PROXY_TARGET: %w", err)
+		}
+		if u.Scheme == "" || u.Host == "" {
+			return nil, errors.New("PROXY_TARGET must include scheme and host (e.g., http://localhost:9000)")
+		}
+		targets = []*url.URL{u}
 	}
 
-	u, err := url.Parse(rawTarget)
-	if err != nil {
-		return nil, fmt.Errorf("invalid PROXY_TARGET: %w", err)
-	}
-	if u.Scheme == "" || u.Host == "" {
-		return nil, errors.New("PROXY_TARGET must include scheme and host (e.g., http://localhost:9000)")
-	}
+	primary := targets[0]
 
 	cacheEnabled := getEnvBool("CACHE_ENABLED", defaultCacheEnabled)
 	cacheMax := getEnvInt("CACHE_MAX_ENTRIES", defaultCacheMaxEntries)
@@ -73,15 +99,22 @@ func Load() (*Config, error) {
 	allowedRaw := getEnv("ALOW_REQUEST_TYPE", defaultAllowedMethods)
 	allowed := parseMethods(allowedRaw)
 
+	lbStrategy := strings.TrimSpace(os.Getenv("PROXY_LB_STRATEGY"))
+	if lbStrategy == "" {
+		lbStrategy = "rr"
+	}
+
 	return &Config{
-		ListenAddr: listen,
-		TargetURL:  u,
+		ListenAddr:           listen,
+		TargetURL:            primary,
+		TargetURLs:           targets,
 		Cache: CacheConfig{
 			Enabled:    cacheEnabled,
 			MaxEntries: cacheMax,
 		},
-		Queue:          q,
-		AllowedMethods: allowed,
+		Queue:                q,
+		AllowedMethods:       allowed,
+		LoadBalancerStrategy: lbStrategy,
 	}, nil
 }
 

@@ -17,12 +17,13 @@ import (
 
 type ReverseProxy struct {
 	target         *url.URL
+	targets        []*url.URL
 	transport      *http.Transport
 	cache          Cache
 	cacheOn        bool
-	// handler is the effective handler (optionally wrapped with queue.WithQueue).
-	handler http.Handler
+	handler        http.Handler
 	allowedMethods map[string]struct{}
+	balancer       Balancer
 }
 
 // Creates a new ReverseProxy instance with the specified target, cache, and cache toggle.
@@ -38,12 +39,25 @@ func NewReverseProxy(target *url.URL, cache Cache, cacheOn bool) *ReverseProxy {
 	}
 	p := &ReverseProxy{
 		target:    target,
+		targets:   []*url.URL{target},
 		transport: tr,
 		cache:     cache,
 		cacheOn:   cacheOn,
 	}
 	// default handler (queued wrapper may be added later); upstream only.
 	p.handler = http.HandlerFunc(p.serveUpstream)
+	p.balancer = newBalancer("rr", p.targets)
+	return p
+}
+
+// NewReverseProxyMulti builds a reverse proxy over multiple upstream targets (round-robin).
+func NewReverseProxyMulti(targets []*url.URL, cache Cache, cacheOn bool) *ReverseProxy {
+	if len(targets) == 0 {
+		panic("NewReverseProxyMulti requires at least one target")
+	}
+	p := NewReverseProxy(targets[0], cache, cacheOn)
+	p.targets = append([]*url.URL{}, targets...)
+	p.balancer = newBalancer("rr", p.targets)
 	return p
 }
 
@@ -99,7 +113,9 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Perform cache-hit check BEFORE queue so hits never wait.
+	// Pre-select target for cache key rewriting (preview = true if we want RR not to advance; we keep simple preview flag).
+	chosen := p.balancer.Pick(true)
+
 	start := time.Now()
 	if p.cacheOn && r != nil {
 		// Read & buffer body (if any) so it can be hashed and reused downstream.
@@ -116,10 +132,21 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		outreq := r.Clone(r.Context())
-		p.directRequest(outreq)
+		p.directRequest(outreq, chosen)
 
 		if isCacheableRequest(outreq) && !clientNoCache(outreq) {
+			// Build cache key using original client host (not the selected upstream),
+			// so different backend choices still hit the same cached object.
+			clientHost := r.Host
+			upHost := outreq.Host
+			upURLHost := outreq.URL.Host
+			outreq.Host = clientHost
+			outreq.URL.Host = clientHost
 			key := buildCacheKey(outreq)
+			// restore upstream host fields for any later use
+			outreq.Host = upHost
+			outreq.URL.Host = upURLHost
+
 			if bodyHash != "" {
 				key += "|bh=" + bodyHash
 			}
@@ -159,7 +186,11 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Cache miss/bypass: go through the (possibly queued) upstream handler.
+	// Ensure we advance balancer for real upstream work (round-robin / least-conn accounting).
+	chosen = p.balancer.Pick(false)
+
+	// MISS/BYPASS: ensure chosen target stored for reuse & acquisition in upstream path.
+	r = r.WithContext(context.WithValue(r.Context(), upstreamTargetCtxKey{}, chosen))
 	p.handler.ServeHTTP(w, r)
 }
 
@@ -167,8 +198,23 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (p *ReverseProxy) serveUpstream(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	ctx := r.Context()
+
+	// Reuse previously chosen target (from cache phase) if present; otherwise pick now.
+	var tgt *url.URL
+	if v := ctx.Value(upstreamTargetCtxKey{}); v != nil {
+		if u, ok := v.(*url.URL); ok && u != nil {
+			tgt = u
+		}
+	}
+	if tgt == nil {
+		tgt = p.balancer.Pick(false)
+	}
+	// Acquire (increments active only for real upstream request).
+	release := p.balancer.Acquire(tgt)
+	defer release()
+
 	outreq := r.Clone(ctx)
-	p.directRequest(outreq)
+	p.directRequest(outreq, tgt)
 
 	// Forward request to upstream
 	resp, err := p.transport.RoundTrip(outreq)
@@ -243,11 +289,11 @@ func (p *ReverseProxy) serveUpstream(w http.ResponseWriter, r *http.Request) {
 }
 
 // Rewrites the request URL, path, and hop-by-hop headers.
-func (p *ReverseProxy) directRequest(outreq *http.Request) {
+func (p *ReverseProxy) directRequest(outreq *http.Request, tgt *url.URL) {
 	// Rewrite URL
-	outreq.URL.Scheme = p.target.Scheme
-	outreq.URL.Host = p.target.Host
-	outreq.URL.Path = singleJoiningSlash(p.target.Path, outreq.URL.Path)
+	outreq.URL.Scheme = tgt.Scheme
+	outreq.URL.Host = tgt.Host
+	outreq.URL.Path = singleJoiningSlash(tgt.Path, outreq.URL.Path)
 
 	// Remove hop-by-hop headers
 	for _, h := range hopHeaders {
@@ -265,10 +311,48 @@ func (p *ReverseProxy) directRequest(outreq *http.Request) {
 	}
 	outreq.Header.Set("X-Forwarded-Proto", schemeOf(outreq))
 	outreq.Header.Set("X-Forwarded-Host", outreq.Host)
-	outreq.Host = p.target.Host
+	outreq.Host = tgt.Host
 }
 
-// Determines the scheme of the request (http or https).
+// ConfigureBalancer switches balancing strategy at runtime.
+func (p *ReverseProxy) ConfigureBalancer(strategy string) {
+	p.balancer = newBalancer(strategy, p.targets)
+}
+
+// context key for cached request key
+type cacheKeyCtxKey struct{}
+type upstreamTargetCtxKey struct{}
+
+// Checks if the client explicitly requested no-cache.
+func clientNoCache(r *http.Request) bool {
+	cc := parseCacheControl(r.Header.Get("Cache-Control"))
+	if _, ok := cc["no-cache"]; ok {
+		return true
+	}
+	if _, ok := cc["no-store"]; ok {
+		return true
+	}
+	if strings.EqualFold(r.Header.Get("Pragma"), "no-cache") {
+		return true
+	}
+	return false
+}
+
+// Joins two paths with a single slash.
+func singleJoiningSlash(a, b string) string {
+	aslash := strings.HasSuffix(a, "/")
+	bslash := strings.HasPrefix(b, "/")
+	switch {
+	case aslash && bslash:
+		return a + b[1:]
+	case !aslash && !bslash:
+		return a + "/" + b
+	default:
+		return a + b
+	}
+}
+
+// Adds back missing helper used by directRequest.
 func schemeOf(r *http.Request) string {
 	if r.TLS != nil {
 		return "https"
@@ -307,36 +391,4 @@ func sanitizeResponseHeaders(h http.Header) http.Header {
 func respWithBody(status int, header http.Header) *http.Response {
 	return &http.Response{StatusCode: status, Header: header}
 }
-
-// Checks if the client explicitly requested no-cache.
-func clientNoCache(r *http.Request) bool {
-	cc := parseCacheControl(r.Header.Get("Cache-Control"))
-	if _, ok := cc["no-cache"]; ok {
-		return true
-	}
-	if _, ok := cc["no-store"]; ok {
-		return true
-	}
-	if strings.EqualFold(r.Header.Get("Pragma"), "no-cache") {
-		return true
-	}
-	return false
-}
-
-// Joins two paths with a single slash.
-func singleJoiningSlash(a, b string) string {
-	aslash := strings.HasSuffix(a, "/")
-	bslash := strings.HasPrefix(b, "/")
-	switch {
-	case aslash && bslash:
-		return a + b[1:]
-	case !aslash && !bslash:
-		return a + "/" + b
-	default:
-		return a + b
-	}
-}
-
-// context key for cached request key
-type cacheKeyCtxKey struct{}
 

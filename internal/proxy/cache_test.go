@@ -1,18 +1,36 @@
 package proxy_test
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"traefik-challenge-2/internal/proxy"
 )
+
+var (
+	_pkgBannerMu      sync.Mutex
+	_pkgBannerPrinted = map[string]struct{}{}
+)
+
+func banner(file string) {
+	_pkgBannerMu.Lock()
+	if _, ok := _pkgBannerPrinted[file]; ok {
+		_pkgBannerMu.Unlock()
+		return
+	}
+	_pkgBannerPrinted[file] = struct{}{}
+	_pkgBannerMu.Unlock()
+	fmt.Printf("\n===== BEGIN TEST FILE: internal/proxy/%s =====\n", file)
+}
 
 func newProxy(t *testing.T, target *url.URL, cache proxy.Cache, cacheOn bool, qcfg *proxy.QueueConfig) http.Handler {
 	t.Helper()
@@ -24,6 +42,7 @@ func newProxy(t *testing.T, target *url.URL, cache proxy.Cache, cacheOn bool, qc
 }
 
 func TestCache_HitAndMiss(t *testing.T) {
+	banner("cache_test.go")
 	var hits int64
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt64(&hits, 1)
@@ -62,6 +81,7 @@ func TestCache_HitAndMiss(t *testing.T) {
 }
 
 func TestCache_RespectsNoCacheRequestDirective(t *testing.T) {
+	banner("cache_test.go")
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=3600")
 		_, _ = io.WriteString(w, "fresh")
@@ -88,6 +108,7 @@ func TestCache_RespectsNoCacheRequestDirective(t *testing.T) {
 }
 
 func TestCache_ExpiryAndRefetch(t *testing.T) {
+	banner("cache_test.go")
 	var hits int64
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt64(&hits, 1)
@@ -125,6 +146,7 @@ func TestCache_ExpiryAndRefetch(t *testing.T) {
 }
 
 func TestCache_POST_Hit(t *testing.T) {
+	banner("cache_test.go")
 	var hits int64
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt64(&hits, 1)
@@ -160,6 +182,7 @@ func TestCache_POST_Hit(t *testing.T) {
 }
 
 func TestCache_POST_DifferentBodies_NotHit(t *testing.T) {
+	banner("cache_test.go")
 	var hits int64
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt64(&hits, 1)
@@ -192,6 +215,7 @@ func TestCache_POST_DifferentBodies_NotHit(t *testing.T) {
 }
 
 func TestCache_PUT_Hit(t *testing.T) {
+	banner("cache_test.go")
 	var hits int64
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt64(&hits, 1)
@@ -221,6 +245,7 @@ func TestCache_PUT_Hit(t *testing.T) {
 }
 
 func TestCache_PATCH_Hit(t *testing.T) {
+	banner("cache_test.go")
 	var hits int64
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt64(&hits, 1)
@@ -250,6 +275,7 @@ func TestCache_PATCH_Hit(t *testing.T) {
 }
 
 func TestCache_DELETE_Hit(t *testing.T) {
+	banner("cache_test.go")
 	var hits int64
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt64(&hits, 1)
@@ -279,6 +305,7 @@ func TestCache_DELETE_Hit(t *testing.T) {
 }
 
 func TestCache_HEAD_Hit(t *testing.T) {
+	banner("cache_test.go")
 	var hits int64
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt64(&hits, 1)
@@ -308,6 +335,7 @@ func TestCache_HEAD_Hit(t *testing.T) {
 }
 
 func TestDisallowedMethod_NoCacheInteraction(t *testing.T) {
+	banner("cache_test.go")
 	var upstreamHits int64
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt64(&upstreamHits, 1)
@@ -342,6 +370,7 @@ func TestDisallowedMethod_NoCacheInteraction(t *testing.T) {
 
 // Ensures allowed method still leverages cache (MISS then HIT) under method restriction.
 func TestAllowedMethod_CacheWorksWithRestriction(t *testing.T) {
+	banner("cache_test.go")
 	var upstreamHits int64
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt64(&upstreamHits, 1)

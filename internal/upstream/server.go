@@ -214,8 +214,15 @@ func Start(addr string) error {
 		return err
 	}
 	log.Printf("Upstream example server listening on %s", l.Addr().String())
-	// Wrap with logging and request ID middleware.
-	return http.Serve(l, withRequestID(withRequestLogging(withServerHeaders(mux))))
+	upID := l.Addr().String()
+	chain := withRequestID(
+		withRequestLogging(
+			withServerHeaders(
+				withUpstreamHeader(upID, mux),
+			),
+		),
+	)
+	return http.Serve(l, chain)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -246,4 +253,12 @@ func addrWithPortZero(addr string) string {
 		return ":0"
 	}
 	return net.JoinHostPort(host, "0")
+}
+
+// Injects X-Upstream header for every response.
+func withUpstreamHeader(id string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Upstream", id)
+		next.ServeHTTP(w, r)
+	})
 }
