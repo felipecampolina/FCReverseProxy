@@ -1,6 +1,10 @@
 package proxy
 
 import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net"
 	"net/http"
@@ -59,10 +63,30 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Perform cache-hit check BEFORE queue so hits never wait.
 	start := time.Now()
 	if p.cacheOn && r != nil {
+		// Read & buffer body (if any) so it can be hashed and reused downstream.
+		var bodyHash string
+		if r.Body != nil {
+			if b, err := io.ReadAll(r.Body); err == nil {
+				if len(b) > 0 {
+					sum := sha256.Sum256(b)
+					bodyHash = hex.EncodeToString(sum[:])
+				}
+				// restore body for further handling
+				r.Body = io.NopCloser(bytes.NewReader(b))
+			}
+		}
+
 		outreq := r.Clone(r.Context())
 		p.directRequest(outreq)
+
 		if isCacheableRequest(outreq) && !clientNoCache(outreq) {
 			key := buildCacheKey(outreq)
+			if bodyHash != "" {
+				key += "|bh=" + bodyHash
+			}
+			// stash key in context for reuse on MISS
+			r = r.WithContext(context.WithValue(r.Context(), cacheKeyCtxKey{}, key))
+
 			if cached, ok, stale := p.cache.Get(key); ok && !stale {
 				// Log cache hit
 				logRequestCacheHit(r)
@@ -164,7 +188,12 @@ func (p *ReverseProxy) serveUpstream(w http.ResponseWriter, r *http.Request) {
 
 	// Cache the response if eligible (on MISS)
 	if eligibleReq && cacheableResp {
-		key := buildCacheKey(outreq)
+		// Reuse precomputed key (with body hash) if available
+		key, _ := r.Context().Value(cacheKeyCtxKey{}).(string)
+		if key == "" {
+			// fallback (no body hash) — should rarely happen
+			key = buildCacheKey(outreq)
+		}
 		p.cache.Set(key, &CachedResponse{
 			StatusCode: status,
 			Header:     cleanHeaders,
@@ -268,4 +297,7 @@ func singleJoiningSlash(a, b string) string {
 		return a + b
 	}
 }
+
+// context key for cached request key
+type cacheKeyCtxKey struct{}
 

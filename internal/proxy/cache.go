@@ -9,7 +9,7 @@ import (
 )
 
 // CachedResponse stores the necessary data to respond without contacting the upstream.
-// The Body is kept in memory. For large payloads, consider using a disk-based cache.
+// The Body is kept in memory. Now applies to any HTTP method (body-hash is part of key when present).
 // Only GET requests are cached in this example.
 type CachedResponse struct {
 	StatusCode int
@@ -162,11 +162,9 @@ var hopHeaders = []string{
 	"Upgrade",
 }
 
-// Determines if a request is cacheable (only GET requests without no-store/no-cache directives).
+// Determines if a request is cacheable (now all methods unless explicit no-store/no-cache and auth rules).
 func isCacheableRequest(r *http.Request) bool {
-	if r.Method != http.MethodGet {
-		return false
-	}
+	// Removed method == GET restriction to allow all HTTP methods to be cached.
 	cc := parseCacheControl(r.Header.Get("Cache-Control"))
 	if _, ok := cc["no-store"]; ok {
 		return false
@@ -261,3 +259,4 @@ func buildCacheKey(r *http.Request) string {
 	b.WriteString(strings.TrimSpace(r.Header.Get("Accept-Encoding")))
 	return b.String()
 }
+
