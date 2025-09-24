@@ -11,6 +11,12 @@ import (
 	"traefik-challenge-2/internal/proxy"
 )
 
+type TLSConfig struct {
+	Enabled  bool
+	CertFile string
+	KeyFile  string
+}
+
 type Config struct {
 	ListenAddr            string    // Example: ":8080"
 	TargetURL             *url.URL  // First (primary) target for backward compatibility
@@ -18,7 +24,8 @@ type Config struct {
 	Cache                 CacheConfig
 	Queue                 proxy.QueueConfig
 	AllowedMethods        []string
-	LoadBalancerStrategy  string // "rr" (default) or "least_conn"
+	LoadBalancerStrategy  string
+	TLS                   TLSConfig
 }
 
 type CacheConfig struct {
@@ -104,6 +111,12 @@ func Load() (*Config, error) {
 		lbStrategy = "rr"
 	}
 
+	tlsCfg := TLSConfig{
+		Enabled:  getEnvBool("PROXY_TLS_ENABLED", false),
+		CertFile: strings.TrimSpace(os.Getenv("PROXY_TLS_CERT_FILE")),
+		KeyFile:  strings.TrimSpace(os.Getenv("PROXY_TLS_KEY_FILE")),
+	}
+
 	return &Config{
 		ListenAddr:           listen,
 		TargetURL:            primary,
@@ -115,6 +128,7 @@ func Load() (*Config, error) {
 		Queue:                q,
 		AllowedMethods:       allowed,
 		LoadBalancerStrategy: lbStrategy,
+		TLS:                  tlsCfg,
 	}, nil
 }
 

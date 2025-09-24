@@ -47,7 +47,7 @@ func main() {
 		w.Write([]byte("ok"))
 	})
 
-	log.Printf("Listening on %s, upstreams=%d primary=%s lb=%s cache=%v queue(max=%d,concurrent=%d)",
+	log.Printf("Listening on %s, upstreams=%d primary=%s lb=%s cache=%v queue(max=%d,concurrent=%d) tls(enabled=%v)",
 		cfg.ListenAddr,
 		len(cfg.TargetURLs),
 		cfg.TargetURL.String(),
@@ -55,9 +55,11 @@ func main() {
 		cfg.Cache.Enabled,
 		qcfg.MaxQueue,
 		qcfg.MaxConcurrent,
+		cfg.TLS.Enabled,
 	)
 
-	if err := http.ListenAndServe(cfg.ListenAddr, withServerHeaders(mux)); err != nil {
+	// Replaced old inline TLS / HTTP start logic:
+	if err := startServer(cfg, withServerHeaders(mux)); err != nil {
 		log.Fatal(err)
 	}
 }

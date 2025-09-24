@@ -9,9 +9,18 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
+	"net"
 )
 
-// banner helper comes from balancer_test.go (same package)
+
 
 func startUpstream(t *testing.T, name string, slow bool) *httptest.Server {
 	h := http.NewServeMux()
@@ -198,5 +207,94 @@ func TestProxyLeastConnections(t *testing.T) {
 	resp3.Body.Close()
 	if resp3.Header.Get("X-Upstream") != "SLOW" {
 		t.Fatalf("expected third request to hit SLOW, got %s", resp3.Header.Get("X-Upstream"))
+	}
+}
+
+// --- New helper to generate a self-signed cert (for mismatch test) ---
+func genCertKey(t *testing.T, cn string) (certPEM, keyPEM []byte) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("gen key: %v", err)
+	}
+	serial, err := rand.Int(rand.Reader, big.NewInt(1<<62))
+	if err != nil {
+		t.Fatalf("serial: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: cn},
+		NotBefore:    time.Now().Add(-1 * time.Minute),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     []string{cn},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")}, // added so requests to 127.0.0.1 validate
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create cert: %v", err)
+	}
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	return
+}
+
+// --- New test: proxy served over HTTPS (TLS termination at proxy) ---
+func TestProxyOverHTTPS(t *testing.T) {
+	banner("proxy_integration_test.go")
+
+	up := startUpstream(t, "TLS-UP", false)
+	defer up.Close()
+
+	targets := []*url.URL{mustParse(t, up.URL)}
+	rp := NewReverseProxyMulti(targets, NewLRUCache(32), true)
+	rp.ConfigureBalancer("rr")
+
+	// Generate self-signed cert and key for the proxy
+	certPEM, keyPEM := genCertKey(t, "proxy.local")
+
+	// Create TLS configuration using the generated cert and key
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("failed to load key pair: %v", err)
+	}
+	tlsConfig := &tls.Config{Certificates: []tls.Certificate{cert}}
+
+	// Start proxy with TLS using the custom cert
+	tlsProxy := httptest.NewUnstartedServer(rp)
+	tlsProxy.TLS = tlsConfig
+	tlsProxy.StartTLS()
+	defer tlsProxy.Close()
+
+	// HTTPS client trusting test server cert
+	client := tlsProxy.Client()
+	client.Timeout = 3 * time.Second
+
+	req, _ := http.NewRequest("GET", tlsProxy.URL+"/nocache?x=1", nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("https request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if resp.Header.Get("X-Upstream") == "" {
+		t.Fatalf("missing X-Upstream header in HTTPS proxied response")
+	}
+}
+
+// --- New test: certificate/key mismatch should be rejected ---
+func TestTLSCertKeyMismatch(t *testing.T) {
+	banner("proxy_integration_test.go")
+
+	// Generate one cert/key pair and a second, unrelated key.
+	certA, _ := genCertKey(t, "mismatch.local") // discard key to avoid unused var
+	_, keyB := genCertKey(t, "other.local")
+
+	// Intentionally try to pair certA with keyB (should fail).
+	if _, err := tls.X509KeyPair(certA, keyB); err == nil {
+		t.Fatalf("expected cert/key mismatch to produce error, got nil")
 	}
 }

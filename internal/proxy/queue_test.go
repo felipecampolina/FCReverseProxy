@@ -62,11 +62,12 @@ func TestQueue_ConcurrencyLimitAndQueueing(t *testing.T) {
 
 	var ok, rejected int
 	for _, c := range codes {
-		if c == http.StatusOK {
+		switch c {
+		case http.StatusOK:
 			ok++
-		} else if c == http.StatusTooManyRequests {
+		case http.StatusTooManyRequests:
 			rejected++
-		} else {
+		default:
 			t.Fatalf("unexpected status %d", c)
 		}
 	}
@@ -84,79 +85,78 @@ func TestQueue_ConcurrencyLimitAndQueueing(t *testing.T) {
 
 func TestQueue_TimeoutWhileWaiting(t *testing.T) {
 	banner("queue_test.go")
-    started := make(chan struct{})
-    var once sync.Once
+	started := make(chan struct{})
+	var once sync.Once
 
-    up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        // Signal when the first request actually hits upstream (i.e., holds active)
-        once.Do(func() { close(started) })
-        time.Sleep(2 * time.Second)
-        w.WriteHeader(200)
-    }))
-    t.Cleanup(up.Close)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Signal when the first request actually hits upstream (i.e., holds active)
+		once.Do(func() { close(started) })
+		time.Sleep(2 * time.Second)
+		w.WriteHeader(200)
+	}))
+	t.Cleanup(up.Close)
 
-    tgt, _ := url.Parse(up.URL)
-    rp := proxy.NewReverseProxy(tgt, proxy.NewLRUCache(0), false).WithQueue(proxy.QueueConfig{
-        MaxQueue:       1,
-        MaxConcurrent:  1,
-        EnqueueTimeout: 10 * time.Millisecond,
-    })
+	tgt, _ := url.Parse(up.URL)
+	rp := proxy.NewReverseProxy(tgt, proxy.NewLRUCache(0), false).WithQueue(proxy.QueueConfig{
+		MaxQueue:       1,
+		MaxConcurrent:  1,
+		EnqueueTimeout: 10 * time.Millisecond,
+	})
 
-    // First request occupies the only active slot
-    go func() {
-        w := httptest.NewRecorder()
-        rp.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
-    }()
+	// First request occupies the only active slot
+	go func() {
+		w := httptest.NewRecorder()
+		rp.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+	}()
 
-    // Wait until the first request is definitely active
-    <-started
+	// Wait until the first request is definitely active
+	<-started
 
-    // Second request should time out while queued
-    w2 := httptest.NewRecorder()
-    rp.ServeHTTP(w2, httptest.NewRequest("GET", "/", nil))
-    if w2.Code != http.StatusServiceUnavailable {
-        t.Fatalf("expected 503 for queue wait timeout, got %d", w2.Code)
-    }
+	// Second request should time out while queued
+	w2 := httptest.NewRecorder()
+	rp.ServeHTTP(w2, httptest.NewRequest("GET", "/", nil))
+	if w2.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 for queue wait timeout, got %d", w2.Code)
+	}
 }
 
 func TestQueue_ClientCancellationWhileQueued(t *testing.T) {
 	banner("queue_test.go")
 
-    started := make(chan struct{})
-    var once sync.Once
+	started := make(chan struct{})
+	var once sync.Once
 
-    up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        once.Do(func() { close(started) })
-        time.Sleep(500 * time.Millisecond)
-        w.WriteHeader(200)
-    }))
-    t.Cleanup(up.Close)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		once.Do(func() { close(started) })
+		time.Sleep(500 * time.Millisecond)
+		w.WriteHeader(200)
+	}))
+	t.Cleanup(up.Close)
 
-    tgt, _ := url.Parse(up.URL)
-    rp := proxy.NewReverseProxy(tgt, proxy.NewLRUCache(0), false).WithQueue(proxy.QueueConfig{
-        MaxQueue:       1,
-        MaxConcurrent:  1,
-        EnqueueTimeout: time.Second,
-    })
+	tgt, _ := url.Parse(up.URL)
+	rp := proxy.NewReverseProxy(tgt, proxy.NewLRUCache(0), false).WithQueue(proxy.QueueConfig{
+		MaxQueue:       1,
+		MaxConcurrent:  1,
+		EnqueueTimeout: time.Second,
+	})
 
-    // Fill active slot
-    go func() {
-        w := httptest.NewRecorder()
-        rp.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
-    }()
+	// Fill active slot
+	go func() {
+		w := httptest.NewRecorder()
+		rp.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+	}()
 
-    // Ensure the first request is actually active
-    <-started
+	// Ensure the first request is actually active
+	<-started
 
-    // Second request cancels while queued
-    ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-    defer cancel()
-    req := httptest.NewRequest("GET", "/", nil).WithContext(ctx)
-    w := httptest.NewRecorder()
-    rp.ServeHTTP(w, req)
+	// Second request cancels while queued
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	req := httptest.NewRequest("GET", "/", nil).WithContext(ctx)
+	w := httptest.NewRecorder()
+	rp.ServeHTTP(w, req)
 
-    if w.Code != http.StatusServiceUnavailable {
-        t.Fatalf("expected 503 for client cancellation, got %d", w.Code)
-    }
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 for client cancellation, got %d", w.Code)
+	}
 }
-
