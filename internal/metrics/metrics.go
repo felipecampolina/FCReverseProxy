@@ -58,6 +58,25 @@ var (
 	)
 )
 
+// New: per-upstream (X-Upstream) proxy-side metrics
+var (
+	proxyUpstreamRequestsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "proxy_upstream_requests_total",
+			Help: "Total upstream responses observed by the proxy, labeled by upstream (X-Upstream), method and status",
+		},
+		[]string{"upstream", "method", "status"},
+	)
+	proxyUpstreamReqDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "proxy_upstream_request_duration_seconds",
+			Help:    "Upstream request duration observed at the proxy by upstream and method",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"upstream", "method"},
+	)
+)
+
 // Upstream metrics
 var (
 	upRequestsTotal = prometheus.NewCounterVec(
@@ -97,6 +116,9 @@ func init() {
 		upRequestsTotal,
 		upRequestDuration,
 		upInflight,
+		// New: proxy-side per-upstream
+		proxyUpstreamRequestsTotal,
+		proxyUpstreamReqDuration,
 	)
 }
 
@@ -113,6 +135,15 @@ func ObserveProxyResponse(method string, status int, cache string, dur time.Dura
 	cache = normCacheLabel(cache)
 	proxyRequestsTotal.WithLabelValues(method, strconv.Itoa(status), cache).Inc()
 	proxyReqDuration.WithLabelValues(method, cache).Observe(dur.Seconds())
+}
+
+// New: observe upstream response at the proxy grouped by 'upstream' (X-Upstream)
+func ObserveProxyUpstreamResponse(upstream, method string, status int, dur time.Duration) {
+	if upstream == "" {
+		upstream = "unknown"
+	}
+	proxyUpstreamRequestsTotal.WithLabelValues(upstream, method, strconv.Itoa(status)).Inc()
+	proxyUpstreamReqDuration.WithLabelValues(upstream, method).Observe(dur.Seconds())
 }
 
 func IncProxyUpstreamInflight(host string) { proxyUpstreamInflight.WithLabelValues(host).Inc() }

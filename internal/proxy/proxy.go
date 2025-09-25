@@ -225,6 +225,11 @@ func (p *ReverseProxy) serveUpstream(w http.ResponseWriter, r *http.Request) {
 	// Forward request to upstream
 	resp, err := p.transport.RoundTrip(outreq)
 	if err != nil {
+		status := http.StatusBadGateway
+		if ctx.Err() != nil {
+			status = http.StatusRequestTimeout
+		}
+		imetrics.ObserveProxyUpstreamResponse(tgt.Host, r.Method, status, time.Since(start))
 		select {
 		case <-ctx.Done():
 			w.WriteHeader(http.StatusRequestTimeout)
@@ -265,11 +270,20 @@ func (p *ReverseProxy) serveUpstream(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(status)
 	_, _ = w.Write(buf)
 
+	// Compute duration once
+	dur := time.Since(start)
+
+	upLabel := rawHeaders.Get("X-Upstream")
+	if strings.TrimSpace(upLabel) == "" {
+		upLabel = tgt.Host
+	}
+	imetrics.ObserveProxyUpstreamResponse(upLabel, r.Method, status, dur)
+
 	// Log response
 	logResponseCacheHit(
 		status,
 		len(buf),
-		time.Since(start),
+		dur,
 		w.Header(),
 		r,
 		w,
