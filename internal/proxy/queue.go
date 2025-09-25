@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"sync/atomic"
 	"time"
+
+	imetrics "traefik-challenge-2/internal/metrics"
 )
 
 type QueueConfig struct {
@@ -40,16 +42,19 @@ func WithQueue(next http.Handler, cfg QueueConfig) http.Handler {
 		case waiters <- struct{}{}:
 			// ok
 		default:
+			imetrics.QueueRejectedInc()
 			http.Error(w, "queue full, try again later", http.StatusTooManyRequests)
 			return
 		}
 
 		queued := true
 		newDepth := atomic.AddInt64(&depth, 1)
+		imetrics.QueueDepthSet(newDepth)
 		defer func() {
 			if queued {
 				<-waiters
 				atomic.AddInt64(&depth, -1)
+				imetrics.QueueDepthSet(atomic.LoadInt64(&depth))
 			}
 		}()
 
@@ -77,12 +82,15 @@ func WithQueue(next http.Handler, cfg QueueConfig) http.Handler {
 		case <-ctx.Done():
 			// Client canceled while queued
 			cancelAcquire() // ensure acquire goroutine stops
+			imetrics.QueueWaitObserve(time.Since(start))
 			failQueue(w, ctx.Err())
 			return
 
 		case <-timer.C:
 			// Timed out while queued
 			cancelAcquire() // ensure acquire goroutine stops
+			imetrics.QueueTimeoutsInc()
+			imetrics.QueueWaitObserve(time.Since(start))
 			failQueue(w, context.DeadlineExceeded)
 			return
 
@@ -93,6 +101,7 @@ func WithQueue(next http.Handler, cfg QueueConfig) http.Handler {
 		// Leave the queue now that we're active.
 		<-waiters
 		atomic.AddInt64(&depth, -1)
+		imetrics.QueueDepthSet(atomic.LoadInt64(&depth))
 		queued = false
 
 		// Release active when done serving.
@@ -104,6 +113,9 @@ func WithQueue(next http.Handler, cfg QueueConfig) http.Handler {
 			w.Header().Set("X-Queue-Depth", strconv.FormatInt(newDepth, 10))
 			w.Header().Set("X-Queue-Wait", time.Since(start).String())
 		}
+
+		// Record queue wait for successful admission
+		imetrics.QueueWaitObserve(time.Since(start))
 
 		next.ServeHTTP(w, r)
 	})

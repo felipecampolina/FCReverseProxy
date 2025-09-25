@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	imetrics "traefik-challenge-2/internal/metrics"
 )
 
 type ReverseProxy struct {
@@ -215,6 +217,10 @@ func (p *ReverseProxy) serveUpstream(w http.ResponseWriter, r *http.Request) {
 
 	outreq := r.Clone(ctx)
 	p.directRequest(outreq, tgt)
+
+	// In-flight upstream metric
+	imetrics.IncProxyUpstreamInflight(tgt.Host)
+	defer imetrics.DecProxyUpstreamInflight(tgt.Host)
 
 	// Forward request to upstream
 	resp, err := p.transport.RoundTrip(outreq)

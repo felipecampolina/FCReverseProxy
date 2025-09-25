@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	imetrics "traefik-challenge-2/internal/metrics"
 )
 
 // loggingResponseWriter captures status code and bytes written.
@@ -58,7 +60,16 @@ func (r rcCombiner) Close() error { return r.closer.Close() }
 func withRequestLogging(next http.Handler) http.Handler {
 	const maxBodyPreview = 8 << 10 // 8KB
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Fast-path: do not log or record metrics for Prometheus scrapes.
+		// This aligns with proxy behavior where /metrics is not proxied/measured.
+		if isMetricsScrape(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		start := time.Now()
+		imetrics.UpstreamInflightInc()
+		defer imetrics.UpstreamInflightDec()
 
 		// Prepare remote address (favor X-Forwarded-For if present).
 		var remote, fwdChain string
@@ -74,14 +85,17 @@ func withRequestLogging(next http.Handler) http.Handler {
 			}
 		}
 
-		// Safely preview up to 8KB of the body and restore it.
+		// Always preview up to maxBodyPreview for non-scrape requests
+		previewLimit := maxBodyPreview
+
+		// Safely preview up to previewLimit of the body and restore it.
 		var preview []byte
-		if r.Body != nil {
-			limited := io.LimitReader(r.Body, maxBodyPreview+1)
+		if r.Body != nil && previewLimit > 0 {
+			limited := io.LimitReader(r.Body, int64(previewLimit+1))
 			buf, _ := io.ReadAll(limited)
-			truncated := len(buf) > maxBodyPreview
+			truncated := len(buf) > previewLimit
 			if truncated {
-				preview = buf[:maxBodyPreview]
+				preview = buf[:previewLimit]
 			} else {
 				preview = buf
 			}
@@ -126,8 +140,8 @@ func withRequestLogging(next http.Handler) http.Handler {
 			bodyNote,
 		)
 
-		// Wrap ResponseWriter to capture status/bytes and preview body
-		lrw := &loggingResponseWriter{ResponseWriter: w, maxPreview: maxBodyPreview}
+		// Wrap ResponseWriter to capture status/bytes and preview body (limited by previewLimit)
+		lrw := &loggingResponseWriter{ResponseWriter: w, maxPreview: previewLimit}
 		next.ServeHTTP(lrw, r)
 
 		dur := time.Since(start)
@@ -180,12 +194,25 @@ func withRequestLogging(next http.Handler) http.Handler {
 			notModified,
 			respBodyNote,
 		)
+
+		// Metrics
+		status := lrw.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		imetrics.ObserveUpstreamResponse(r.Method, status, dur)
 	})
 }
 
 // withRequestID assigns a unique ID to each request and includes it in the logs.
 func withRequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Skip logging/headers for Prometheus scrapes
+		if isMetricsScrape(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		reqID := fmt.Sprintf("%d-%d", time.Now().UnixNano(), atomic.AddInt64(&requestCounter, 1))
 		r.Header.Set("X-Request-ID", reqID)
 		log.Printf("REQ_ID=%s method=%s url=%s", reqID, r.Method, r.URL.Path)
@@ -209,4 +236,18 @@ func parseCacheControl(v string) []string {
 		out = append(out, p)
 	}
 	return out
+}
+
+// Identify Prometheus /metrics scrapes to reduce logging noise
+func isMetricsScrape(r *http.Request) bool {
+	if r.URL != nil && r.URL.Path == "/metrics" {
+		return true
+	}
+	if strings.Contains(r.Header.Get("User-Agent"), "Prometheus") {
+		return true
+	}
+	if strings.Contains(r.Header.Get("Accept"), "openmetrics") {
+		return true
+	}
+	return false
 }

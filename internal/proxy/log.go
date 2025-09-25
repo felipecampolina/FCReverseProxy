@@ -5,6 +5,8 @@ import (
 	"log"
 	"net/http"
 	"time"
+
+	imetrics "traefik-challenge-2/internal/metrics"
 )
 
 func logEnabled() bool {
@@ -32,27 +34,31 @@ func logRequestCacheHit(r *http.Request) {
 }
 
 // LogResponse logs details of a response in the specified pattern.
+// Also records Prometheus metrics using response headers (including X-Cache).
 func logResponseCacheHit(status int, bytes int, dur time.Duration, respHeaders http.Header, req *http.Request, resp http.ResponseWriter, notModified bool, respBodyNote string) {
 	if !logEnabled() {
-		return
+		// still record metrics in non-verbose mode
+	} else {
+		log.Printf(
+			"RESP status=%d bytes=%d dur=%s resp-content-length=%s resp_headers=%v | cache:req_cc=%v resp_cc=%v etag=%q last-modified=%q expires=%q age=%q via=%q x-cache=%q not-modified=%t%s",
+			status,
+			bytes,
+			dur.String(), // Use the dynamically passed duration
+			respHeaders.Get("Content-Length"), // Use respHeaders for Content-Length
+			respHeaders,
+			parseCacheControl(req.Header.Get("Cache-Control")),
+			parseCacheControl(respHeaders.Get("Cache-Control")), // Use respHeaders for Cache-Control
+			respHeaders.Get("ETag"),
+			respHeaders.Get("Last-Modified"),
+			respHeaders.Get("Expires"),
+			respHeaders.Get("Age"),
+			respHeaders.Get("Via"),
+			respHeaders.Get("X-Cache"),
+			notModified,
+			respBodyNote,
+		)
 	}
-	log.Printf(
-		"RESP status=%d bytes=%d dur=%s resp-content-length=%s resp_headers=%v | cache:req_cc=%v resp_cc=%v etag=%q last-modified=%q expires=%q age=%q via=%q x-cache=%q not-modified=%t%s",
-		status,
-		bytes,
-		dur.String(), // Use the dynamically passed duration
-		respHeaders.Get("Content-Length"), // Use respHeaders for Content-Length
-		respHeaders,
-		parseCacheControl(req.Header.Get("Cache-Control")),
-		parseCacheControl(respHeaders.Get("Cache-Control")), // Use respHeaders for Cache-Control
-		respHeaders.Get("ETag"),
-		respHeaders.Get("Last-Modified"),
-		respHeaders.Get("Expires"),
-		respHeaders.Get("Age"),
-		respHeaders.Get("Via"),
-		respHeaders.Get("X-Cache"),
-		notModified,
-		respBodyNote,
-	)
-}
 
+	cacheLabel := respHeaders.Get("X-Cache")
+	imetrics.ObserveProxyResponse(req.Method, status, cacheLabel, dur)
+}

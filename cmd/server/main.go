@@ -7,6 +7,7 @@ import (
 	"traefik-challenge-2/internal/proxy"
 
 	"github.com/joho/godotenv"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
@@ -38,6 +39,10 @@ func main() {
 
 	// Set up the HTTP server
 	mux := http.NewServeMux()
+
+	// Metrics endpoint (must not be proxied)
+	mux.Handle("/metrics", promhttp.Handler())
+
 	// Register the proxy directly; queue is applied internally only on cache misses
 	mux.Handle("/", rp)
 

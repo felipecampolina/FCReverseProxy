@@ -12,6 +12,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // Item represents a simple record stored in memory.
@@ -99,6 +101,9 @@ func Start(addr string) error {
 	mem.create("beta", 20)
 
 	mux := http.NewServeMux()
+
+	// Metrics endpoint served on the same listener (no separate port/env needed)
+	mux.Handle("/metrics", promhttp.Handler())
 
 	// Health endpoint
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
