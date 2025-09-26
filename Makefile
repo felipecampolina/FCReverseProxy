@@ -66,3 +66,8 @@ run-metrics:
 stop-metrics:
 	$(RM_PROM)
 	$(RM_GRAF)
+
+.PHONY: test_with_metrics
+test_with_metrics:
+	@echo ">> Generating comprehensive traffic and verifying metrics (override PROXY_ADDR/UPSTREAM_ADDR as needed; defaults https://localhost:8090 and http://localhost:9000)"
+	go test -v ./internal/e2e -count=1 -parallel=1 -p=1
