@@ -1,0 +1,63 @@
+# ==============================================================================
+# Global configuration for the reverse proxy and demo upstream service.
+#
+# Notes:
+# - Durations use Go's duration format, e.g. "2s", "500ms", "1m".
+# - Balancer strategies:
+#     - rr            : Round-robin (default)
+#     - least_conn    : Least connections
+# - allowed_methods: list of HTTP methods. Empty or omitted means "allow all".
+# ==============================================================================
+
+proxy:
+  # Address the proxy listens on
+  listen: ":8090"
+
+  # Upstream targets
+  # Prefer the 'targets' list. If only a single upstream is used, 'target' may be used instead.
+  # targets: ["http://localhost:9000", "http://localhost:9001"]
+  # target: "http://localhost:9000"
+  targets: ["http://localhost:9000", "http://localhost:9001", "http://localhost:9002"]
+
+  # Load balancer strategy : rr | lc
+  load_balancer_strategy: rr
+
+  # Limit the HTTP methods accepted by the proxy
+  # If omitted or empty, all methods are allowed.
+  allowed_methods: [GET, HEAD, POST, PUT, PATCH, DELETE]
+
+  # Response cache settings (was CACHE_ENABLED, CACHE_MAX_ENTRIES)
+  cache:
+    enabled: true
+    max_entries: 2048
+
+  # Queue/concurrency control
+  queue:
+    # Maximum number of requests allowed to wait in the queue.
+    max_queue: 1000
+    # Maximum number of requests processed concurrently.
+    max_concurrent: 100
+    # How long a request may wait in the queue before timing out (503).
+    enqueue_timeout: "2s"
+    # Whether to add X-Queue-* headers on admitted requests.
+    queue_wait_header: true
+
+  # TLS termination 
+  # If enabled=true and cert/key are not present, the proxy will auto-generate a self-signed cert for localhost.
+  tls:
+    enabled: true
+    cert_file: "server.crt"
+    key_file: "server.key"
+
+# Demo upstream app configuration 
+# This helps keep upstream's port aligned with the proxy defaults in examples/tests.
+# Example for mutliple listen addresses:
+# listen: "[:9000", ":9001", ":9002]"
+upstream:
+ listen: [":9000", ":9001", ":9002"]
+
+# Metrics stack (used by `make run-metrics`)
+metrics:
+  # Host ports used for container port mapping
+  prometheus_port: 9090
+  grafana_port: 3000

@@ -6,16 +6,10 @@ import (
 	"traefik-challenge-2/internal/config"
 	"traefik-challenge-2/internal/proxy"
 
-	"github.com/joho/godotenv"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
-	// Load environment variables from the .env file
-	if err := godotenv.Load(); err != nil {
-		log.Printf("Warning: Could not load .env file (%v), using system environment variables", err)
-	}
-
 	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {

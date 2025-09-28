@@ -82,11 +82,24 @@ func pkixName(cn string) pkix.Name {
 // --- Tests ---
 
 func TestTLSConfig_StaticCert_EnvParsing(t *testing.T) {
+	// Create a temp YAML config that enables TLS and sets cert/key paths
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	yaml := []byte(`
+proxy:
+  listen: ":0"
+  target: "http://localhost:9000"
+  tls:
+    enabled: true
+    cert_file: "/tmp/server.crt"
+    key_file: "/tmp/server.key"
+`)
+	if err := os.WriteFile(cfgPath, yaml, 0600); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+
 	withEnvs(t, map[string]string{
-		"PROXY_TARGET":        "http://localhost:9000",
-		"PROXY_TLS_ENABLED":   "true",
-		"PROXY_TLS_CERT_FILE": "/tmp/server.crt",
-		"PROXY_TLS_KEY_FILE":  "/tmp/server.key",
+		"CONFIG_FILE": cfgPath,
 	}, func() {
 		cfg, err := config.Load()
 		if err != nil {
