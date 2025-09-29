@@ -35,6 +35,8 @@ func banner(file string) {
 func newProxy(t *testing.T, target *url.URL, cache proxy.Cache, cacheOn bool, qcfg *proxy.QueueConfig) http.Handler {
 	t.Helper()
 	rp := proxy.NewReverseProxy(target, cache, cacheOn)
+	// Disable active health checks 
+	rp.SetHealthCheckEnabled(false)
 	if qcfg != nil {
 		rp = rp.WithQueue(*qcfg)
 	}
@@ -384,6 +386,8 @@ func TestAllowedMethod_CacheWorksWithRestriction(t *testing.T) {
 	cache := proxy.NewLRUCache(128)
 
 	rp := proxy.NewReverseProxy(u, cache, true)
+	// Disable active health checks
+	rp.SetHealthCheckEnabled(false)
 	rp.SetAllowedMethods([]string{"GET"}) // Only GET allowed
 
 	// First GET (MISS)

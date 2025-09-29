@@ -41,6 +41,8 @@ func TestQueue_ConcurrencyLimitAndQueueing(t *testing.T) {
 		EnqueueTimeout:  time.Second,
 		QueueWaitHeader: true,
 	})
+	// Disable health checks for unit tests
+	rp.SetHealthCheckEnabled(false)
 
 	h := rp
 
@@ -102,6 +104,8 @@ func TestQueue_TimeoutWhileWaiting(t *testing.T) {
 		MaxConcurrent:  1,
 		EnqueueTimeout: 10 * time.Millisecond,
 	})
+	// Disable health checks for unit tests
+	rp.SetHealthCheckEnabled(false)
 
 	// First request occupies the only active slot
 	go func() {
@@ -139,6 +143,8 @@ func TestQueue_ClientCancellationWhileQueued(t *testing.T) {
 		MaxConcurrent:  1,
 		EnqueueTimeout: time.Second,
 	})
+	// Disable health checks for unit tests
+	rp.SetHealthCheckEnabled(false)
 
 	// Fill active slot
 	go func() {

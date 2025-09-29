@@ -85,6 +85,8 @@ func TestProxyRoundRobinWithCache(t *testing.T) {
 	targets := []*url.URL{mustParse(t, up1.URL), mustParse(t, up2.URL)}
 
 	rp := NewReverseProxyMulti(targets, NewLRUCache(128), true)
+	// Disable active health checks for these test
+	rp.SetHealthCheckEnabled(false)
 	rp.ConfigureBalancer("rr")
 
 	proxySrv := httptest.NewServer(rp)
@@ -156,6 +158,8 @@ func TestProxyLeastConnections(t *testing.T) {
 	targets := []*url.URL{mustParse(t, upSlow.URL), mustParse(t, upFast.URL)}
 
 	rp := NewReverseProxyMulti(targets, NewLRUCache(64), true)
+	// Disable active health checks for these tests; httptest upstreams lack /healthz
+	rp.SetHealthCheckEnabled(false)
 	rp.ConfigureBalancer("least_conn")
 
 	proxySrv := httptest.NewServer(rp)
@@ -249,6 +253,8 @@ func TestProxyOverHTTPS(t *testing.T) {
 
 	targets := []*url.URL{mustParse(t, up.URL)}
 	rp := NewReverseProxyMulti(targets, NewLRUCache(32), true)
+	// Disable active health checks for these tests; httptest upstreams lack /healthz
+	rp.SetHealthCheckEnabled(false)
 	rp.ConfigureBalancer("rr")
 
 	// Generate self-signed cert and key for the proxy

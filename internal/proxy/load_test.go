@@ -26,6 +26,8 @@ func TestHighVolume(t *testing.T) {
 		MaxConcurrent:  5,
 		EnqueueTimeout: time.Second,
 	})
+	// Disable health checks in unit test
+	rp.SetHealthCheckEnabled(false)
 
 	const N = 200
 	var wg sync.WaitGroup

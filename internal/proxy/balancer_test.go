@@ -40,7 +40,8 @@ func TestRoundRobinBalancer(t *testing.T) {
 		mustURL(t, "http://two"),
 		mustURL(t, "http://three"),
 	}
-	b := NewRoundRobinBalancer(targets)
+	// Disable health checks in tests
+	b := NewRoundRobinBalancer(targets, false)
 
 	seq := []string{}
 	for i := 0; i < 6; i++ {
@@ -63,7 +64,8 @@ func TestLeastConnectionsBalancerBasic(t *testing.T) {
 		mustURL(t, "http://b"),
 		mustURL(t, "http://c"),
 	}
-	b := NewLeastConnectionsBalancer(targets)
+	// Disable health checks in tests 
+	b := NewLeastConnectionsBalancer(targets, false)
 
 	// First pick: all zero -> picks 'a'
 	a := b.Pick(false)

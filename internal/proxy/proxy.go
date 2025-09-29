@@ -26,6 +26,8 @@ type ReverseProxy struct {
 	handler        http.Handler
 	allowedMethods map[string]struct{}
 	balancer       Balancer
+	lbStrategy     string
+	healthChecksEnabled bool
 }
 
 // Creates a new ReverseProxy instance with the specified target, cache, and cache toggle.
@@ -45,10 +47,13 @@ func NewReverseProxy(target *url.URL, cache Cache, cacheOn bool) *ReverseProxy {
 		transport: tr,
 		cache:     cache,
 		cacheOn:   cacheOn,
+		// defaults
+		lbStrategy:          "rr",
+		healthChecksEnabled: true,
 	}
 	// default handler (queued wrapper may be added later); upstream only.
 	p.handler = http.HandlerFunc(p.serveUpstream)
-	p.balancer = newBalancer("rr", p.targets)
+	p.balancer = newBalancer(p.lbStrategy, p.targets, p.healthChecksEnabled)
 	return p
 }
 
@@ -59,7 +64,7 @@ func NewReverseProxyMulti(targets []*url.URL, cache Cache, cacheOn bool) *Revers
 	}
 	p := NewReverseProxy(targets[0], cache, cacheOn)
 	p.targets = append([]*url.URL{}, targets...)
-	p.balancer = newBalancer("rr", p.targets)
+	p.balancer = newBalancer(p.lbStrategy, p.targets, p.healthChecksEnabled)
 	return p
 }
 
@@ -97,6 +102,10 @@ func (p *ReverseProxy) listAllowedMethods() []string {
 
 // Handles incoming HTTP requests and routes them to the appropriate target.
 func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// record start and propagate to downstream handlers (includes queue wait)
+	start := time.Now()
+	r = r.WithContext(context.WithValue(r.Context(), startTimeCtxKey{}, start))
+
 	// Health check endpoint (bypass queue)
 	if r.URL.Path == "/healthz" {
 		w.WriteHeader(http.StatusOK)
@@ -110,15 +119,16 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if allow := p.listAllowedMethods(); len(allow) > 0 {
 				w.Header().Set("Allow", strings.Join(allow, ", "))
 			}
+			// observe 405 response at the proxy (bypass cache)
+			imetrics.ObserveProxyResponse(r.Method, http.StatusMethodNotAllowed, "BYPASS", time.Since(start))
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 	}
 
-	// Pre-select target for cache key rewriting (preview = true if we want RR not to advance; we keep simple preview flag).
+	// Pre-select target for cache key 
 	chosen := p.balancer.Pick(true)
 
-	start := time.Now()
 	if p.cacheOn && r != nil {
 		// Read & buffer body (if any) so it can be hashed and reused downstream.
 		var bodyHash string
@@ -134,7 +144,10 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		outreq := r.Clone(r.Context())
-		p.directRequest(outreq, chosen)
+		// Only rewrite if we have a candidate (avoid nil deref if no targets configured).
+		if chosen != nil {
+			p.directRequest(outreq, chosen)
+		}
 
 		if isCacheableRequest(outreq) && !clientNoCache(outreq) {
 			// Build cache key using original client host (not the selected upstream),
@@ -172,6 +185,9 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(cached.StatusCode)
 				_, _ = w.Write(cached.Body)
 
+				// observe proxy HIT
+				imetrics.ObserveProxyResponse(r.Method, cached.StatusCode, "HIT", time.Since(start))
+
 				// Log response
 				logResponseCacheHit(
 					cached.StatusCode,
@@ -188,8 +204,14 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Ensure we advance balancer for real upstream work (round-robin / least-conn accounting).
+	// Ensure we advance balancer for real upstream work.
 	chosen = p.balancer.Pick(false)
+	if chosen == nil {
+		// No healthy upstreams: observe and stop the request.
+		imetrics.ObserveProxyResponse(r.Method, http.StatusServiceUnavailable, "BYPASS", time.Since(start))
+		http.Error(w, "no healthy upstream targets", http.StatusServiceUnavailable)
+		return
+	}
 
 	// MISS/BYPASS: ensure chosen target stored for reuse & acquisition in upstream path.
 	r = r.WithContext(context.WithValue(r.Context(), upstreamTargetCtxKey{}, chosen))
@@ -201,6 +223,12 @@ func (p *ReverseProxy) serveUpstream(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	ctx := r.Context()
 
+	// prefer ServeHTTP start time for end-to-end metric, fallback to local start
+	reqStart, _ := ctx.Value(startTimeCtxKey{}).(time.Time)
+	if reqStart.IsZero() {
+		reqStart = start
+	}
+
 	// Reuse previously chosen target (from cache phase) if present; otherwise pick now.
 	var tgt *url.URL
 	if v := ctx.Value(upstreamTargetCtxKey{}); v != nil {
@@ -211,6 +239,13 @@ func (p *ReverseProxy) serveUpstream(w http.ResponseWriter, r *http.Request) {
 	if tgt == nil {
 		tgt = p.balancer.Pick(false)
 	}
+	if tgt == nil {
+		// observe no healthy upstreams here too (defensive)
+		imetrics.ObserveProxyResponse(r.Method, http.StatusServiceUnavailable, "BYPASS", time.Since(reqStart))
+		http.Error(w, "no healthy upstream targets", http.StatusServiceUnavailable)
+		return
+	}
+
 	// Acquire (increments active only for real upstream request).
 	release := p.balancer.Acquire(tgt)
 	defer release()
@@ -230,6 +265,8 @@ func (p *ReverseProxy) serveUpstream(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusRequestTimeout
 		}
 		imetrics.ObserveProxyUpstreamResponse(tgt.Host, r.Method, status, time.Since(start))
+		// also observe final proxy response (bypass cache)
+		imetrics.ObserveProxyResponse(r.Method, status, "BYPASS", time.Since(reqStart))
 		select {
 		case <-ctx.Done():
 			w.WriteHeader(http.StatusRequestTimeout)
@@ -278,6 +315,9 @@ func (p *ReverseProxy) serveUpstream(w http.ResponseWriter, r *http.Request) {
 		upLabel = tgt.Host
 	}
 	imetrics.ObserveProxyUpstreamResponse(upLabel, r.Method, status, dur)
+
+	// observe end-to-end proxy response (MISS or BYPASS)
+	imetrics.ObserveProxyResponse(r.Method, status, xcache, time.Since(reqStart))
 
 	// Log response
 	logResponseCacheHit(
@@ -336,12 +376,21 @@ func (p *ReverseProxy) directRequest(outreq *http.Request, tgt *url.URL) {
 
 // ConfigureBalancer switches balancing strategy at runtime.
 func (p *ReverseProxy) ConfigureBalancer(strategy string) {
-	p.balancer = newBalancer(strategy, p.targets)
+	p.lbStrategy = strategy
+	p.balancer = newBalancer(p.lbStrategy, p.targets, p.healthChecksEnabled)
+}
+
+// Toggle active health checks in the load balancer at runtime.
+func (p *ReverseProxy) SetHealthCheckEnabled(enabled bool) {
+	p.healthChecksEnabled = enabled
+	p.balancer = newBalancer(p.lbStrategy, p.targets, p.healthChecksEnabled)
 }
 
 // context key for cached request key
 type cacheKeyCtxKey struct{}
 type upstreamTargetCtxKey struct{}
+// add context key for request start time (end-to-end measurement)
+type startTimeCtxKey struct{}
 
 // Checks if the client explicitly requested no-cache.
 func clientNoCache(r *http.Request) bool {

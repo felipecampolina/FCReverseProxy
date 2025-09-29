@@ -23,6 +23,8 @@ func main() {
 		rp = proxy.NewReverseProxy(cfg.TargetURL, proxy.NewLRUCache(cfg.Cache.MaxEntries), cfg.Cache.Enabled)
 	}
 	rp.ConfigureBalancer(cfg.LoadBalancerStrategy)
+	// New: enable/disable active health checks in the balancer from config
+	rp.SetHealthCheckEnabled(cfg.LoadBalancerHealthCheck)
 	rp.SetAllowedMethods(cfg.AllowedMethods)
 
 	// Queue configuration comes from config
@@ -46,11 +48,12 @@ func main() {
 		w.Write([]byte("ok"))
 	})
 
-	log.Printf("Listening on %s, upstreams=%d primary=%s lb=%s cache=%v queue(max=%d,concurrent=%d) tls(enabled=%v)",
+	log.Printf("Listening on %s, upstreams=%d primary=%s lb=%s hc=%v cache=%v queue(max=%d,concurrent=%d) tls(enabled=%v)",
 		cfg.ListenAddr,
 		len(cfg.TargetURLs),
 		cfg.TargetURL.String(),
 		cfg.LoadBalancerStrategy,
+		cfg.LoadBalancerHealthCheck,
 		cfg.Cache.Enabled,
 		qcfg.MaxQueue,
 		qcfg.MaxConcurrent,

@@ -25,7 +25,8 @@ type Config struct {
 	Cache                CacheConfig
 	Queue                proxy.QueueConfig
 	AllowedMethods       []string
-	LoadBalancerStrategy string
+	LoadBalancerStrategy  string
+	LoadBalancerHealthCheck bool
 	TLS                  TLSConfig
 }
 
@@ -43,6 +44,8 @@ const (
 	defaultQueueEnqueueTimeout = 2 * time.Second
 	defaultQueueWaitHeader     = true
 	defaultAllowedMethods      = "GET,HEAD,POST,PUT,PATCH,DELETE"
+	defaultLBHealthCheck       = true
+	defaultLBStrategy         = "rr"
 )
 
 // --- YAML model (pointers used so we can distinguish "omitted" vs "false/zero") ---
@@ -55,7 +58,8 @@ type yamlProxy struct {
 	Listen               *string     `yaml:"listen"`
 	Targets              []string    `yaml:"targets"`
 	Target               *string     `yaml:"target"`
-	LoadBalancerStrategy *string     `yaml:"load_balancer_strategy"`
+	LoadBalancerStrategy  *string     `yaml:"load_balancer_strategy"`
+	LoadBalancerHealthCheck *bool       `yaml:"load_balancer_health_check"`
 	AllowedMethods       []string    `yaml:"allowed_methods"`
 	Cache                *yamlCache  `yaml:"cache"`
 	Queue                *yamlQueue  `yaml:"queue"`
@@ -112,8 +116,9 @@ func Load() (*Config, error) {
 			EnqueueTimeout:  defaultQueueEnqueueTimeout,
 			QueueWaitHeader: defaultQueueWaitHeader,
 		},
-		AllowedMethods:       parseMethods(defaultAllowedMethods),
-		LoadBalancerStrategy: "rr",
+		AllowedMethods:          parseMethods(defaultAllowedMethods),
+		LoadBalancerStrategy:    defaultLBStrategy,
+		LoadBalancerHealthCheck: defaultLBHealthCheck,
 		TLS: TLSConfig{
 			Enabled:  false,
 			CertFile: "",
@@ -150,6 +155,10 @@ func Load() (*Config, error) {
 	// Load balancer strategy
 	if y.Proxy.LoadBalancerStrategy != nil && strings.TrimSpace(*y.Proxy.LoadBalancerStrategy) != "" {
 		cfg.LoadBalancerStrategy = strings.TrimSpace(*y.Proxy.LoadBalancerStrategy)
+	}
+	// Load balancer health check (optional, default=true)
+	if y.Proxy.LoadBalancerHealthCheck != nil {
+		cfg.LoadBalancerHealthCheck = *y.Proxy.LoadBalancerHealthCheck
 	}
 
 	// Allowed methods (optional)
