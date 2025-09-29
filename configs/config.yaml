@@ -21,6 +21,9 @@ proxy:
 
   # Load balancer strategy : rr | lc
   load_balancer_strategy: rr
+  # Whether the load balancer should actively probe /healthz before selecting a target.
+  # If false, selection ignores health and follows pure RR/LC order.
+  load_balancer_health_check: true
 
   # Limit the HTTP methods accepted by the proxy
   # If omitted or empty, all methods are allowed.

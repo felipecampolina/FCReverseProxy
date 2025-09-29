@@ -38,7 +38,11 @@
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
         }
       ],
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto", "colorMode": "value" }
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "textMode": "auto",
+        "colorMode": "value"
+      }
     },
     {
       "type": "stat",
@@ -52,7 +56,11 @@
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
         }
       ],
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto", "colorMode": "value" }
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "textMode": "auto",
+        "colorMode": "value"
+      }
     },
     {
       "type": "stat",
@@ -66,7 +74,11 @@
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
         }
       ],
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto", "colorMode": "value" }
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "textMode": "auto",
+        "colorMode": "value"
+      }
     },
     {
       "type": "stat",
@@ -81,11 +93,15 @@
         }
       ],
       "fieldConfig": { "defaults": { "unit": "req/s" } },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto", "colorMode": "value" }
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "textMode": "auto",
+        "colorMode": "value"
+      }
     },
     {
       "type": "timeseries",
-      "title": "Upstream RPS por status",
+      "title": "Upstream RPS by status",
       "gridPos": { "h": 7, "w": 12, "x": 0, "y": 4 },
       "targets": [
         {
@@ -95,11 +111,14 @@
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
         }
       ],
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      }
     },
     {
       "type": "timeseries",
-      "title": "Upstream latência p50 / p90 / p99 (s)",
+      "title": "Upstream latency p50 / p90 / p99 (s)",
       "gridPos": { "h": 7, "w": 12, "x": 12, "y": 4 },
       "targets": [
         {
@@ -122,7 +141,10 @@
         }
       ],
       "fieldConfig": { "defaults": { "unit": "s" } },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      }
     },
     {
       "type": "timeseries",
@@ -136,7 +158,10 @@
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
         }
       ],
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      }
     }
   ],
   "refresh": "10s",

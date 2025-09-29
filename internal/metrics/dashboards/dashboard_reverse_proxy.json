@@ -124,7 +124,7 @@
     },
     {
       "type": "timeseries",
-      "title": "Proxy RPS por status",
+      "title": "Proxy RPS by status",
       "gridPos": { "h": 7, "w": 12, "x": 0, "y": 4 },
       "targets": [
         {
@@ -141,7 +141,7 @@
     },
     {
       "type": "timeseries",
-      "title": "Proxy latência p50 / p90 / p99 (s)",
+      "title": "Proxy latency p50 / p90 / p99 (s)",
       "gridPos": { "h": 7, "w": 12, "x": 12, "y": 4 },
       "targets": [
         {
@@ -171,7 +171,7 @@
     },
     {
       "type": "timeseries",
-      "title": "Proxy RPS por método",
+      "title": "Proxy RPS by method",
       "gridPos": { "h": 7, "w": 12, "x": 0, "y": 11 },
       "targets": [
         {
@@ -188,7 +188,7 @@
     },
     {
       "type": "timeseries",
-      "title": "Proxy RPS por cache (HIT/MISS/BYPASS)",
+      "title": "Proxy RPS by cache (HIT/MISS/BYPASS)",
       "gridPos": { "h": 7, "w": 12, "x": 12, "y": 11 },
       "targets": [
         {
