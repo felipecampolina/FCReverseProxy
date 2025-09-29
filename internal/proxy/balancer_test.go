@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"sync"
 	"testing"
@@ -98,4 +100,86 @@ func TestLeastConnectionsBalancerBasic(t *testing.T) {
 	// Cleanup remaining
 	releaseA1()
 	releaseC1()
+}
+
+func TestRoundRobinBalancerHealthChecks(t *testing.T) {
+	banner("balancer_test.go")
+
+	healthyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	unhealthyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	upUnhealthy := httptest.NewServer(unhealthyHandler)
+	defer upUnhealthy.Close()
+	upHealthy1 := httptest.NewServer(healthyHandler)
+	defer upHealthy1.Close()
+	upHealthy2 := httptest.NewServer(healthyHandler)
+	defer upHealthy2.Close()
+
+	targets := []*url.URL{
+		mustURL(t, upUnhealthy.URL),
+		mustURL(t, upHealthy1.URL),
+		mustURL(t, upHealthy2.URL),
+	}
+	b := NewRoundRobinBalancer(targets, true)
+
+	seenHealthy1 := false
+	seenHealthy2 := false
+	for i := 0; i < 6; i++ {
+		u := b.Pick(false)
+		if u == nil {
+			t.Fatalf("expected a healthy target, got nil")
+		}
+		b.Acquire(u)() // no-op
+		switch u.Host {
+		case mustURL(t, upUnhealthy.URL).Host:
+			t.Fatalf("picked unhealthy target %s", u.Host)
+		case mustURL(t, upHealthy1.URL).Host:
+			seenHealthy1 = true
+		case mustURL(t, upHealthy2.URL).Host:
+			seenHealthy2 = true
+		}
+	}
+	if !seenHealthy1 || !seenHealthy2 {
+		t.Fatalf("expected both healthy targets to be selected at least once; seenHealthy1=%v seenHealthy2=%v", seenHealthy1, seenHealthy2)
+	}
+}
+
+func TestRoundRobinBalancerHealthAllUnhealthy(t *testing.T) {
+	banner("balancer_test.go")
+
+	unhealthyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	upBad1 := httptest.NewServer(unhealthyHandler)
+	defer upBad1.Close()
+	upBad2 := httptest.NewServer(unhealthyHandler)
+	defer upBad2.Close()
+
+	targets := []*url.URL{
+		mustURL(t, upBad1.URL),
+		mustURL(t, upBad2.URL),
+	}
+	b := NewRoundRobinBalancer(targets, true)
+
+	u := b.Pick(false)
+	if u != nil {
+		t.Fatalf("expected nil when all targets unhealthy, got %v", u)
+	}
 }
