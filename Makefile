@@ -21,6 +21,8 @@ ifeq ($(OS),Windows_NT)
   LOKI_PORT := $(shell powershell -NoProfile -Command "$$c=Get-Content -LiteralPath '$(LOKI_FILE)' -Raw; if ($$c -match 'http_listen_port:\s*([0-9]+)') { $$matches[1] } else { 3100 }")
   METRICS_NET := metrics
   NET_CREATE := -@docker network inspect $(METRICS_NET) >NUL 2>&1 || docker network create $(METRICS_NET) >NUL
+  GRAFANA_PROV := $(CURDIR)/configs/grafana/provisioning
+  GRAFANA_DASH := $(CURDIR)/internal/metrics/dashboards
 else
   SHELL := /bin/sh
   .SHELLFLAGS := -c
@@ -41,6 +43,8 @@ else
   LOKI_PORT := $(shell awk -F: '/^[[:space:]]*http_listen_port:/ {gsub(/[[:space:]]/,"",$$2); print $$2; found=1; exit} END{if(!found) print 3100}' $(LOKI_FILE))
   METRICS_NET := metrics
   NET_CREATE := -@docker network inspect $(METRICS_NET) >/dev/null 2>&1 || docker network create $(METRICS_NET) >/dev/null
+  GRAFANA_PROV := $(CURDIR)/configs/grafana/provisioning
+  GRAFANA_DASH := $(CURDIR)/internal/metrics/dashboards
 endif
 
 .PHONY: build test clean run deps
@@ -85,12 +89,10 @@ run-metrics:
 	$(RM_LOKI)
 	$(RM_PROMTAIL)
 	$(NET_CREATE)
-	docker run -d --name=prometheus -p $(PROM_PORT):9090 -v "$(PROM_FILE)":/etc/prometheus/prometheus.yml prom/prometheus
-	docker run -d -p $(GRAFANA_PORT):3000 --name=grafana grafana/grafana-oss
-	@echo ">> Starting Loki on port $(LOKI_PORT) using $(LOKI_FILE)"
+	docker run -d --name=prometheus --network $(METRICS_NET) -p $(PROM_PORT):9090 -v "$(PROM_FILE)":/etc/prometheus/prometheus.yml prom/prometheus
 	docker run -d --name=loki --network $(METRICS_NET) -p $(LOKI_PORT):3100 -v "$(LOKI_FILE)":/etc/loki/local-config.yaml grafana/loki -config.file=/etc/loki/local-config.yaml
-	@echo ">> Starting Promtail using $(PROMTAIL_FILE)"
 	docker run -d --name=promtail --network $(METRICS_NET) -v "$(PROMTAIL_FILE)":/etc/promtail/config.yml -v /var/log:/var/log:ro grafana/promtail -config.file=/etc/promtail/config.yml
+	docker run -d --name=grafana --network $(METRICS_NET) -p $(GRAFANA_PORT):3000 -v "$(GRAFANA_PROV)":/etc/grafana/provisioning -v "$(GRAFANA_DASH)":/var/lib/grafana/dashboards -e GF_AUTH_ANONYMOUS_ENABLED=true -e GF_AUTH_ANONYMOUS_ORG_ROLE=Admin -e GF_SECURITY_ADMIN_PASSWORD=admin grafana/grafana:latest
 
 stop-metrics:
 	$(RM_PROM)

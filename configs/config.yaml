@@ -23,7 +23,7 @@ proxy:
   load_balancer_strategy: rr
   # Whether the load balancer should actively probe /healthz before selecting a target.
   # If false, selection ignores health and follows pure RR/LC order.
-  load_balancer_health_check: true
+  load_balancer_health_check: false
 
   # Limit the HTTP methods accepted by the proxy
   # If omitted or empty, all methods are allowed.
@@ -66,3 +66,9 @@ metrics:
   grafana_port: 3000
   loki_port: 3100
   loki_url: "http://localhost:3100"
+
+logging:
+  # Enable/disable local and Loki emission for each level
+  info_enabled: true
+  debug_enabled: true
+  error_enabled: true

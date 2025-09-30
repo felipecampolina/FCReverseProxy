@@ -23,7 +23,7 @@ query_range:
     cache:
       embedded_cache:
         enabled: true
-        max_size_mb: 100
+        max_size_mb: 1000
 
 limits_config:
   metric_aggregation_enabled: true
