@@ -17,6 +17,7 @@ type CachedResponse struct {
 	Body       []byte
 	StoredAt   time.Time
 	ExpiresAt  time.Time
+	RequestID  string // persisted request id from the MISS that stored this entry
 }
 
 // Cache defines the basic operations for a cache.

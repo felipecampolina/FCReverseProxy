@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	applog "traefik-challenge-2/internal/log"
@@ -109,6 +111,10 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Health check endpoint (bypass queue)
 	if r.URL.Path == "/healthz" {
+		// echo existing request id only; do not create a new one
+		if rid := getRequestID(r); rid != "" {
+			w.Header().Set("X-Request-ID", rid)
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 		return
@@ -119,6 +125,10 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if _, ok := p.allowedMethods[r.Method]; !ok {
 			if allow := p.listAllowedMethods(); len(allow) > 0 {
 				w.Header().Set("Allow", strings.Join(allow, ", "))
+			}
+			// echo existing request id only; do not create a new one
+			if rid := getRequestID(r); rid != "" {
+				w.Header().Set("X-Request-ID", rid)
 			}
 			// observe 405 response at the proxy (bypass cache)
 			imetrics.ObserveProxyResponse(r.Method, http.StatusMethodNotAllowed, "BYPASS", time.Since(start))
@@ -170,13 +180,23 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			r = r.WithContext(context.WithValue(r.Context(), cacheKeyCtxKey{}, key))
 
 			if cached, ok, stale := p.cache.Get(key); ok && !stale {
+				// Prefer the original req_id that created this cache entry (fallback to generating one)
+				rid := strings.TrimSpace(cached.RequestID)
+				if rid == "" {
+					rid = ensureRequestID(r)
+				} else {
+					// override request header so logs use the stored id
+					r.Header.Set("X-Request-ID", rid)
+				}
+				w.Header().Set("X-Request-ID", rid)
+
 				// Log cache hit
 				applog.LogProxyRequestCacheHit(r)
 
 				// Write cached response
 				copyHeader(w.Header(), cached.Header)
 				w.Header().Set("X-Cache", "HIT")
-				// Add/override Age based on when the object was stored
+				// Age header
 				age := int(time.Since(cached.StoredAt).Seconds())
 				if age < 0 {
 					age = 0
@@ -209,10 +229,23 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	chosen = p.balancer.Pick(false)
 	if chosen == nil {
 		// No healthy upstreams: observe and stop the request.
+		// echo existing request id only; do not create a new one
+		if rid := getRequestID(r); rid != "" {
+			w.Header().Set("X-Request-ID", rid)
+		}
 		imetrics.ObserveProxyResponse(r.Method, http.StatusServiceUnavailable, "BYPASS", time.Since(start))
+		// New: error log for no healthy upstreams
+		applog.LogProxyError(http.StatusServiceUnavailable, "BYPASS", "", r, fmt.Errorf("no healthy upstream targets"))
 		http.Error(w, "no healthy upstream targets", http.StatusServiceUnavailable)
 		return
 	}
+
+	// We are going upstream: ensure we have a request ID and echo it
+	reqID := ensureRequestID(r)
+	w.Header().Set("X-Request-ID", reqID)
+
+	// MISS/BYPASS request log before forwarding upstream
+	applog.LogProxyRequest(r)
 
 	// MISS/BYPASS: ensure chosen target stored for reuse & acquisition in upstream path.
 	r = r.WithContext(context.WithValue(r.Context(), upstreamTargetCtxKey{}, chosen))
@@ -268,6 +301,10 @@ func (p *ReverseProxy) serveUpstream(w http.ResponseWriter, r *http.Request) {
 		imetrics.ObserveProxyUpstreamResponse(tgt.Host, r.Method, status, time.Since(start))
 		// also observe final proxy response (bypass cache)
 		imetrics.ObserveProxyResponse(r.Method, status, "BYPASS", time.Since(reqStart))
+
+		// New: standardized proxy error log
+		applog.LogProxyError(status, "BYPASS", tgt.Host, r, err)
+
 		select {
 		case <-ctx.Done():
 			w.WriteHeader(http.StatusRequestTimeout)
@@ -345,6 +382,7 @@ func (p *ReverseProxy) serveUpstream(w http.ResponseWriter, r *http.Request) {
 			Header:     cleanHeaders,
 			Body:       buf,
 			StoredAt:   time.Now(),
+			RequestID:  getRequestID(r), // persist the req_id that produced this cache entry
 		}, ttl)
 	}
 }
@@ -461,4 +499,24 @@ func sanitizeResponseHeaders(h http.Header) http.Header {
 func respWithBody(status int, header http.Header) *http.Response {
 	return &http.Response{StatusCode: status, Header: header}
 }
+
+// Add an atomic counter to help build unique request IDs.
+var requestCounter int64
+
+// ensureRequestID sets X-Request-ID on the request if missing and returns it.
+func ensureRequestID(r *http.Request) string {
+	rid := strings.TrimSpace(r.Header.Get("X-Request-ID"))
+	if rid == "" {
+		rid = fmt.Sprintf("%d-%d", time.Now().UnixNano(), atomic.AddInt64(&requestCounter, 1))
+		r.Header.Set("X-Request-ID", rid)
+	}
+	return rid
+}
+
+// getRequestID returns an existing X-Request-ID without generating a new one.
+func getRequestID(r *http.Request) string {
+	return strings.TrimSpace(r.Header.Get("X-Request-ID"))
+}
+
+
 

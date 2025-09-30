@@ -25,6 +25,11 @@ var (
 	lokiURL    string
 	lokiOnce   sync.Once
 	lokiClient = &http.Client{Timeout: 200 * time.Millisecond}
+
+	// logging level toggles (defaults: INFO/ERROR on, DEBUG off)
+	infoEnabled  = true
+	debugEnabled = false
+	errorEnabled = true
 )
 
 func initLoki() {
@@ -43,11 +48,28 @@ func initLoki() {
 			Metrics *struct {
 				LokiURL string `yaml:"loki_url"`
 			} `yaml:"metrics"`
+			Logging *struct {
+				InfoEnabled  *bool `yaml:"info_enabled"`
+				DebugEnabled *bool `yaml:"debug_enabled"`
+				ErrorEnabled *bool `yaml:"error_enabled"`
+			} `yaml:"logging"`
 		}
 		if b, err := os.ReadFile(cfgFile); err == nil {
 			if err := yaml.Unmarshal(b, &cfg); err == nil {
 				if cfg.Metrics != nil && strings.TrimSpace(cfg.Metrics.LokiURL) != "" {
 					lokiURL = strings.TrimSpace(cfg.Metrics.LokiURL)
+				}
+				// Apply logging level toggles if present
+				if cfg.Logging != nil {
+					if cfg.Logging.InfoEnabled != nil {
+						infoEnabled = *cfg.Logging.InfoEnabled
+					}
+					if cfg.Logging.DebugEnabled != nil {
+						debugEnabled = *cfg.Logging.DebugEnabled
+					}
+					if cfg.Logging.ErrorEnabled != nil {
+						errorEnabled = *cfg.Logging.ErrorEnabled
+					}
 				}
 			}
 		}
@@ -59,14 +81,41 @@ func initLoki() {
 	}
 }
 
-// PushLoki sends a single log line with labels to Loki (no-op if not configured).
-func PushLoki(app string, labels map[string]string, line string) {
+// levelEnabled reports if a given log level is enabled according to config.
+func levelEnabled(level string) bool {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "debug":
+		return debugEnabled
+	case "error":
+		return errorEnabled
+	default:
+		return infoEnabled
+	}
+}
+
+// Emit prints locally (if enabled) and pushes the same line to Loki with a "level" label.
+func Emit(level, app string, labels map[string]string, line string) {
+	lvl := strings.ToLower(level)
+	// Local print (skip during tests)
+	if logEnabled() && levelEnabled(lvl) {
+		log.Print(line)
+	}
+	// Loki
+	PushLokiWithLevel(lvl, app, labels, line)
+}
+
+// PushLokiWithLevel sends a single log line with labels to Loki, adding a "level" label.
+// No-op if Loki is not configured or the level is disabled.
+func PushLokiWithLevel(level, app string, labels map[string]string, line string) {
 	lokiOnce.Do(initLoki)
-	if lokiURL == "" {
+	if lokiURL == "" || !levelEnabled(level) {
 		return
 	}
 
-	lbls := map[string]string{"app": app}
+	lbls := map[string]string{
+		"app":   app,
+		"level": strings.ToLower(strings.TrimSpace(level)),
+	}
 	for k, v := range labels {
 		if strings.TrimSpace(k) == "" {
 			continue
@@ -96,6 +145,11 @@ func PushLoki(app string, labels map[string]string, line string) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	_, _ = lokiClient.Do(req) // fire-and-forget
+}
+
+// Backward-compatible helper (defaults to INFO level).
+func PushLoki(app string, labels map[string]string, line string) {
+	PushLokiWithLevel("INFO", app, labels, line)
 }
 
 // MustHostname returns the current hostname or "unknown" on error.
@@ -148,6 +202,61 @@ func isMetricsScrape(r *http.Request) bool {
 
 // ------------- proxy logging ------------
 
+// LogProxyRequest logs a proxy request (non-cache-hit) with INFO and DEBUG entries.
+func LogProxyRequest(r *http.Request) {
+	line := fmt.Sprintf(
+		"REQ remote=%s method=%s url=%s proto=%s req-content-length=%s headers=%v",
+		r.RemoteAddr,
+		r.Method,
+		r.URL.RequestURI(),
+		r.Proto,
+		r.Header.Get("Content-Length"),
+		r.Header,
+	)
+
+	url := r.URL.RequestURI()
+	up := r.Header.Get("X-Upstream")
+	if strings.TrimSpace(up) == "" {
+		up = "unknown"
+	}
+	labels := map[string]string{
+		"method":     r.Method,
+		"status":     "pending",
+		"cache":      "MISS",
+		"upstream":   up,
+		"host":       MustHostname(),
+		"request_id": r.Header.Get("X-Request-ID"),
+		"url":        url,
+	}
+
+	// INFO (generic)
+	infoLine := fmt.Sprintf("REQ method=%s url=%s | cache=MISS req_id=%s", r.Method, url, r.Header.Get("X-Request-ID"))
+	Emit("info", "proxy", labels, infoLine)
+
+	// DEBUG (detailed)
+	Emit("debug", "proxy", labels, line)
+}
+
+// LogProxyError emits an error-level log for proxy failures (e.g., upstream errors or no healthy targets).
+func LogProxyError(status int, cacheLabel string, upstream string, r *http.Request, err error) {
+	url := r.URL.RequestURI()
+	if strings.TrimSpace(upstream) == "" {
+		upstream = "unknown"
+	}
+	labels := map[string]string{
+		"method":     r.Method,
+		"status":     strconv.Itoa(status),
+		"cache":      cacheLabel,
+		"upstream":   upstream,
+		"host":       MustHostname(),
+		"request_id": r.Header.Get("X-Request-ID"),
+		"url":        url,
+	}
+	line := fmt.Sprintf("ERROR status=%d method=%s url=%s upstream=%s cache=%s err=%v req_id=%s",
+		status, r.Method, url, upstream, cacheLabel, err, r.Header.Get("X-Request-ID"))
+	Emit("error", "proxy", labels, line)
+}
+
 // LogProxyRequestCacheHit logs details of a cache hit in the same pattern as upstream server logs.
 func LogProxyRequestCacheHit(r *http.Request) {
 	line := fmt.Sprintf(
@@ -159,17 +268,28 @@ func LogProxyRequestCacheHit(r *http.Request) {
 		r.Header.Get("Content-Length"),
 		r.Header,
 	)
-	if logEnabled() {
-		log.Print(line)
+
+	url := r.URL.RequestURI()
+	up := r.Header.Get("X-Upstream")
+	if strings.TrimSpace(up) == "" {
+		up = "unknown"
+	}
+	labels := map[string]string{
+		"method":     r.Method,
+		"status":     "200",
+		"cache":      "HIT",
+		"upstream":   up,
+		"host":       MustHostname(),
+		"request_id": r.Header.Get("X-Request-ID"),
+		"url":        url,
 	}
 
-	// Push to Loki (exact same line as local log)
-	PushLoki("proxy", map[string]string{
-		"method": r.Method,
-		"status": "200",
-		"cache":  "HIT",
-		"host":   MustHostname(),
-	}, line)
+	// INFO (generic)
+	infoLine := fmt.Sprintf("REQ method=%s url=%s | cache=HIT req_id=%s", r.Method, url, r.Header.Get("X-Request-ID"))
+	Emit("info", "proxy", labels, infoLine)
+
+	// DEBUG (detailed)
+	Emit("debug", "proxy", labels, line)
 }
 
 // LogProxyResponseCacheHit logs details of a response and records Prometheus metrics using response headers (including X-Cache).
@@ -192,24 +312,30 @@ func LogProxyResponseCacheHit(status int, bytes int, dur time.Duration, respHead
 		notModified,
 		respBodyNote,
 	)
-	if logEnabled() {
-		log.Print(line)
-	}
 
 	cacheLabel := respHeaders.Get("X-Cache")
-
-	// Push to Loki (exact same line as local log)
 	up := respHeaders.Get("X-Upstream")
 	if strings.TrimSpace(up) == "" {
 		up = "unknown"
 	}
-	PushLoki("proxy", map[string]string{
-		"method":   req.Method,
-		"status":   strconv.Itoa(status),
-		"cache":    cacheLabel,
-		"upstream": up,
-		"host":     MustHostname(),
-	}, line)
+	url := req.URL.RequestURI()
+
+	labels := map[string]string{
+		"method":     req.Method,
+		"status":     strconv.Itoa(status),
+		"cache":      cacheLabel,
+		"upstream":   up,
+		"host":       MustHostname(),
+		"request_id": req.Header.Get("X-Request-ID"),
+		"url":        url,
+	}
+
+	// INFO (generic)
+	infoLine := fmt.Sprintf("RESP status=%d bytes=%d dur=%s cache=%s upstream=%s req_id=%s", status, bytes, dur.String(), cacheLabel, up, req.Header.Get("X-Request-ID"))
+	Emit("info", "proxy", labels, infoLine)
+
+	// DEBUG (detailed)
+	Emit("debug", "proxy", labels, line)
 }
 
 // ------------- upstream logging ------------
@@ -338,13 +464,29 @@ func WithRequestLogging(next http.Handler) http.Handler {
 			reqHeaders,
 			bodyNote,
 		)
-		log.Print(reqLine)
-		// Push the exact same request line to Loki
-		PushLoki("upstream", map[string]string{
+
+		upReq := r.Header.Get("X-Upstream")
+		if strings.TrimSpace(upReq) == "" {
+			upReq = "unknown"
+		}
+
+		// Common labels for upstream logs
+		reqLabels := map[string]string{
 			"method":     r.Method,
+			"status":     "pending",
+			"cache":      "",
+			"upstream":   upReq,
 			"host":       MustHostname(),
 			"request_id": r.Header.Get("X-Request-ID"),
-		}, reqLine)
+			"url":        r.URL.RequestURI(),
+		}
+
+		// INFO (generic)
+		infoReq := fmt.Sprintf("REQ method=%s url=%s req_id=%s", r.Method, r.URL.RequestURI(), r.Header.Get("X-Request-ID"))
+		Emit("info", "upstream", reqLabels, infoReq)
+
+		// DEBUG (detailed)
+		Emit("debug", "upstream", reqLabels, reqLine)
 
 		// Wrap ResponseWriter to capture status/bytes and preview body (limited by previewLimit)
 		lrw := &loggingResponseWriter{ResponseWriter: w, maxPreview: previewLimit}
@@ -400,25 +542,35 @@ func WithRequestLogging(next http.Handler) http.Handler {
 			notModified,
 			respBodyNote,
 		)
-		log.Print(respLine)
 
-		// Metrics
+		// DEBUG/INFO emissions with same labels
 		status := lrw.status
 		if status == 0 {
 			status = http.StatusOK
 		}
-		imetrics.ObserveUpstreamResponse(r.Method, status, dur)
-
-		// Push to Loki using the exact same response line
 		upID := lrw.Header().Get("X-Upstream")
-		reqID := r.Header.Get("X-Request-ID")
-		PushLoki("upstream", map[string]string{
+		if strings.TrimSpace(upID) == "" {
+			upID = "unknown"
+		}
+		respLabels := map[string]string{
 			"method":     r.Method,
 			"status":     strconv.Itoa(status),
+			"cache":      respXCache,
 			"upstream":   upID,
 			"host":       MustHostname(),
-			"request_id": reqID,
-		}, respLine)
+			"request_id": r.Header.Get("X-Request-ID"),
+			"url":        r.URL.RequestURI(),
+		}
+
+		// INFO (generic)
+		infoResp := fmt.Sprintf("RESP status=%d bytes=%d dur=%s upstream=%s req_id=%s", status, lrw.n, dur.String(), upID, r.Header.Get("X-Request-ID"))
+		Emit("info", "upstream", respLabels, infoResp)
+
+		// DEBUG (detailed)
+		Emit("debug", "upstream", respLabels, respLine)
+
+		// Metrics
+		imetrics.ObserveUpstreamResponse(r.Method, status, dur)
 	})
 }
 
@@ -433,26 +585,43 @@ func WithRequestID(next http.Handler) http.Handler {
 			return
 		}
 
-		reqID := fmt.Sprintf("%d-%d", time.Now().UnixNano(), atomic.AddInt64(&requestCounter, 1))
-		r.Header.Set("X-Request-ID", reqID)
+		// Respect existing X-Request-ID (e.g., set by proxy); only create if missing.
+		reqID := strings.TrimSpace(r.Header.Get("X-Request-ID"))
+		if reqID == "" {
+			reqID = fmt.Sprintf("%d-%d", time.Now().UnixNano(), atomic.AddInt64(&requestCounter, 1))
+			r.Header.Set("X-Request-ID", reqID)
+		}
 		preLine := fmt.Sprintf("REQ_ID=%s method=%s url=%s", reqID, r.Method, r.URL.Path)
-		log.Print(preLine)
-		// Push the exact same REQ_ID pre line to Loki
-		PushLoki("upstream", map[string]string{
+
+		upHdr := r.Header.Get("X-Upstream")
+		if strings.TrimSpace(upHdr) == "" {
+			upHdr = "unknown"
+		}
+
+		// DEBUG
+		Emit("debug", "upstream", map[string]string{
 			"request_id": reqID,
 			"method":     r.Method,
 			"host":       MustHostname(),
+			"url":        r.URL.Path,
+			"status":     "pending",
+			"cache":      "",
+			"upstream":   upHdr,
 		}, preLine)
 
 		next.ServeHTTP(w, r)
 
 		postLine := fmt.Sprintf("REQ_ID=%s completed", reqID)
-		log.Print(postLine)
-		// Push the exact same REQ_ID completion line to Loki
-		PushLoki("upstream", map[string]string{
+
+		// DEBUG
+		Emit("debug", "upstream", map[string]string{
 			"request_id": reqID,
 			"method":     r.Method,
 			"host":       MustHostname(),
+			"url":        r.URL.Path,
+			"status":     "",
+			"cache":      "",
+			"upstream":   upHdr,
 		}, postLine)
 	})
 }
