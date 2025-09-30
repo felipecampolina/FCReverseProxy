@@ -6,23 +6,41 @@ ifeq ($(OS),Windows_NT)
   .SHELLFLAGS := /C
   PROM_FILE := $(CURDIR)\configs\prometheus.yml
   CONFIG_FILE := configs\config.yaml
-  FILE_CHECK := if not exist configs\prometheus.yml ( echo configs\prometheus.yml not found & exit 1 )
+  # Also ensure Loki and Promtail configs exist
+  FILE_CHECK := if not exist configs\prometheus.yml ( echo configs\prometheus.yml not found & exit 1 ) & if not exist configs\loki-config.yaml ( echo configs\loki-config.yaml not found & exit 1 ) & if not exist configs\promtail-config.yaml ( echo configs\promtail-config.yaml not found & exit 1 )
   RM_PROM := -@docker rm -f prometheus >NUL 2>&1
   RM_GRAF := -@docker rm -f grafana >NUL 2>&1
+  RM_LOKI := -@docker rm -f loki >NUL 2>&1
+  RM_PROMTAIL := -@docker rm -f promtail >NUL 2>&1
   # Extract ports from config.yaml (fallback to 9090/3000)
   PROM_PORT := $(shell powershell -NoProfile -Command "$$c=Get-Content -LiteralPath '$(CONFIG_FILE)' -Raw; if ($$c -match 'prometheus_port:\s*([0-9]+)') { $$matches[1] } else { 9090 }")
   GRAFANA_PORT := $(shell powershell -NoProfile -Command "$$c=Get-Content -LiteralPath '$(CONFIG_FILE)' -Raw; if ($$c -match 'grafana_port:\s*([0-9]+)') { $$matches[1] } else { 3000 }")
+  # Loki: config path and port (fallback to 3100)
+  LOKI_FILE := $(CURDIR)\configs\loki-config.yaml
+  PROMTAIL_FILE := $(CURDIR)\configs\promtail-config.yaml
+  LOKI_PORT := $(shell powershell -NoProfile -Command "$$c=Get-Content -LiteralPath '$(LOKI_FILE)' -Raw; if ($$c -match 'http_listen_port:\s*([0-9]+)') { $$matches[1] } else { 3100 }")
+  METRICS_NET := metrics
+  NET_CREATE := -@docker network inspect $(METRICS_NET) >NUL 2>&1 || docker network create $(METRICS_NET) >NUL
 else
   SHELL := /bin/sh
   .SHELLFLAGS := -c
   PROM_FILE := $${PWD}/configs/prometheus.yml
   CONFIG_FILE := configs/config.yaml
-  FILE_CHECK := if [ ! -f configs/prometheus.yml ]; then echo "configs/prometheus.yml not found"; exit 1; fi
+  # Also ensure Loki and Promtail configs exist
+  FILE_CHECK := if [ ! -f configs/prometheus.yml ]; then echo "configs/prometheus.yml not found"; exit 1; fi; if [ ! -f configs/loki-config.yaml ]; then echo "configs/loki-config.yaml not found"; exit 1; fi; if [ ! -f configs/promtail-config.yaml ]; then echo "configs/promtail-config.yaml not found"; exit 1; fi
   RM_PROM := -@docker rm -f prometheus >/dev/null 2>&1 || true
   RM_GRAF := -@docker rm -f grafana >/dev/null 2>&1 || true
+  RM_LOKI := -@docker rm -f loki >/dev/null 2>&1 || true
+  RM_PROMTAIL := -@docker rm -f promtail >/dev/null 2>&1 || true
   # Extract ports from config.yaml (fallback to 9090/3000)
   PROM_PORT := $(shell awk -F: '/^[[:space:]]*prometheus_port:/ {gsub(/[[:space:]]/,"",$$2); print $$2; found=1; exit} END{if(!found) print 9090}' $(CONFIG_FILE))
   GRAFANA_PORT := $(shell awk -F: '/^[[:space:]]*grafana_port:/ {gsub(/[[:space:]]/,"",$$2); print $$2; found=1; exit} END{if(!found) print 3000}' $(CONFIG_FILE))
+  # Loki: config path and port (fallback to 3100)
+  LOKI_FILE := $${PWD}/configs/loki-config.yaml
+  PROMTAIL_FILE := $${PWD}/configs/promtail-config.yaml
+  LOKI_PORT := $(shell awk -F: '/^[[:space:]]*http_listen_port:/ {gsub(/[[:space:]]/,"",$$2); print $$2; found=1; exit} END{if(!found) print 3100}' $(LOKI_FILE))
+  METRICS_NET := metrics
+  NET_CREATE := -@docker network inspect $(METRICS_NET) >/dev/null 2>&1 || docker network create $(METRICS_NET) >/dev/null
 endif
 
 .PHONY: build test clean run deps
@@ -58,18 +76,27 @@ run-upstream: deps
 run-demo: deps
 	$(MAKE) -j2 run-upstream run-proxy
 
-# --- Metrics stack (Prometheus + Grafana) ---
+# --- Metrics stack (Prometheus + Grafana + Loki + Promtail) ---
 .PHONY: run-metrics stop-metrics
 run-metrics:
 	$(FILE_CHECK)
 	$(RM_PROM)
 	$(RM_GRAF)
+	$(RM_LOKI)
+	$(RM_PROMTAIL)
+	$(NET_CREATE)
 	docker run -d --name=prometheus -p $(PROM_PORT):9090 -v "$(PROM_FILE)":/etc/prometheus/prometheus.yml prom/prometheus
 	docker run -d -p $(GRAFANA_PORT):3000 --name=grafana grafana/grafana-oss
+	@echo ">> Starting Loki on port $(LOKI_PORT) using $(LOKI_FILE)"
+	docker run -d --name=loki --network $(METRICS_NET) -p $(LOKI_PORT):3100 -v "$(LOKI_FILE)":/etc/loki/local-config.yaml grafana/loki -config.file=/etc/loki/local-config.yaml
+	@echo ">> Starting Promtail using $(PROMTAIL_FILE)"
+	docker run -d --name=promtail --network $(METRICS_NET) -v "$(PROMTAIL_FILE)":/etc/promtail/config.yml -v /var/log:/var/log:ro grafana/promtail -config.file=/etc/promtail/config.yml
 
 stop-metrics:
 	$(RM_PROM)
 	$(RM_GRAF)
+	$(RM_LOKI)
+	$(RM_PROMTAIL)
 
 .PHONY: test_with_metrics
 test-with-metrics:

@@ -2,16 +2,22 @@ package upstream
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	imetrics "traefik-challenge-2/internal/metrics"
+
+	"gopkg.in/yaml.v3"
 )
 
 // loggingResponseWriter captures status code and bytes written.
@@ -128,7 +134,7 @@ func withRequestLogging(next http.Handler) http.Handler {
 		}
 
 		// Log request line
-		log.Printf(
+		reqLine := fmt.Sprintf(
 			"REQ remote=%s fwd=%q method=%s url=%s proto=%s req-content-length=%s headers=%v%s",
 			remote,
 			fwdChain,
@@ -139,6 +145,13 @@ func withRequestLogging(next http.Handler) http.Handler {
 			reqHeaders,
 			bodyNote,
 		)
+		log.Print(reqLine)
+		// Push the exact same request line to Loki
+		pushLoki("upstream", map[string]string{
+			"method":     r.Method,
+			"host":       mustHostname(),
+			"request_id": r.Header.Get("X-Request-ID"),
+		}, reqLine)
 
 		// Wrap ResponseWriter to capture status/bytes and preview body (limited by previewLimit)
 		lrw := &loggingResponseWriter{ResponseWriter: w, maxPreview: previewLimit}
@@ -176,7 +189,7 @@ func withRequestLogging(next http.Handler) http.Handler {
 		}
 
 		// Log response line
-		log.Printf(
+		respLine := fmt.Sprintf(
 			"RESP status=%d bytes=%d dur=%s resp-content-length=%s resp_headers=%v | cache:req_cc=%v resp_cc=%v etag=%q last-modified=%q expires=%q age=%q via=%q x-cache=%q not-modified=%t%s",
 			lrw.status,
 			lrw.n,
@@ -194,6 +207,7 @@ func withRequestLogging(next http.Handler) http.Handler {
 			notModified,
 			respBodyNote,
 		)
+		log.Print(respLine)
 
 		// Metrics
 		status := lrw.status
@@ -201,6 +215,17 @@ func withRequestLogging(next http.Handler) http.Handler {
 			status = http.StatusOK
 		}
 		imetrics.ObserveUpstreamResponse(r.Method, status, dur)
+
+		// Push to Loki using the exact same response line
+		upID := lrw.Header().Get("X-Upstream")
+		reqID := r.Header.Get("X-Request-ID")
+		pushLoki("upstream", map[string]string{
+			"method":     r.Method,
+			"status":     strconv.Itoa(status),
+			"upstream":   upID,
+			"host":       mustHostname(),
+			"request_id": reqID,
+		}, respLine)
 	})
 }
 
@@ -215,9 +240,25 @@ func withRequestID(next http.Handler) http.Handler {
 
 		reqID := fmt.Sprintf("%d-%d", time.Now().UnixNano(), atomic.AddInt64(&requestCounter, 1))
 		r.Header.Set("X-Request-ID", reqID)
-		log.Printf("REQ_ID=%s method=%s url=%s", reqID, r.Method, r.URL.Path)
+		preLine := fmt.Sprintf("REQ_ID=%s method=%s url=%s", reqID, r.Method, r.URL.Path)
+		log.Print(preLine)
+		// Push the exact same REQ_ID pre line to Loki
+		pushLoki("upstream", map[string]string{
+			"request_id": reqID,
+			"method":     r.Method,
+			"host":       mustHostname(),
+		}, preLine)
+
 		next.ServeHTTP(w, r)
-		log.Printf("REQ_ID=%s completed", reqID)
+
+		postLine := fmt.Sprintf("REQ_ID=%s completed", reqID)
+		log.Print(postLine)
+		// Push the exact same REQ_ID completion line to Loki
+		pushLoki("upstream", map[string]string{
+			"request_id": reqID,
+			"method":     r.Method,
+			"host":       mustHostname(),
+		}, postLine)
 	})
 }
 
@@ -250,4 +291,91 @@ func isMetricsScrape(r *http.Request) bool {
 		return true
 	}
 	return false
+}
+
+// ------- Loki push (opt-in via env LOKI_URL) -------
+
+var (
+	lokiURL    string
+	lokiOnce   sync.Once
+	lokiClient = &http.Client{Timeout: 200 * time.Millisecond}
+)
+
+func initLoki() {
+	lokiURL = ""
+	cfgFile := ""
+	for _, c := range []string{"configs/config.yaml", "configs/config.yml"} {
+		if _, err := os.Stat(c); err == nil {
+			cfgFile = c
+			break
+		}
+	}
+	if cfgFile != "" {
+		var cfg struct {
+			Metrics *struct {
+				LokiURL string `yaml:"loki_url"`
+			} `yaml:"metrics"`
+		}
+		if b, err := os.ReadFile(cfgFile); err == nil {
+			if err := yaml.Unmarshal(b, &cfg); err == nil {
+				if cfg.Metrics != nil && strings.TrimSpace(cfg.Metrics.LokiURL) != "" {
+					lokiURL = strings.TrimSpace(cfg.Metrics.LokiURL)
+				}
+			}
+		}
+	}
+
+	// Accept values like "http://localhost:3100" or full push path
+	if lokiURL != "" && !strings.Contains(lokiURL, "/loki/api/v1/push") {
+		lokiURL = strings.TrimRight(lokiURL, "/") + "/loki/api/v1/push"
+	}
+}
+
+func pushLoki(app string, labels map[string]string, line string) {
+	lokiOnce.Do(initLoki)
+	if lokiURL == "" {
+		return // disabled until LOKI_URL is set
+	}
+
+	// Safe, low-cardinality labels to help Grafana drilldown from metrics
+	lbls := map[string]string{
+		"app": app,
+	}
+	for k, v := range labels {
+		if strings.TrimSpace(k) == "" {
+			continue
+		}
+		lbls[k] = v
+	}
+
+	ts := strconv.FormatInt(time.Now().UnixNano(), 10)
+	payload := struct {
+		Streams []struct {
+			Stream map[string]string `json:"stream"`
+			Values [][2]string       `json:"values"`
+		} `json:"streams"`
+	}{
+		Streams: []struct {
+			Stream map[string]string `json:"stream"`
+			Values [][2]string       `json:"values"`
+		}{
+			{Stream: lbls, Values: [][2]string{{ts, line}}},
+		},
+	}
+
+	b, _ := json.Marshal(payload)
+	req, err := http.NewRequest("POST", lokiURL, bytes.NewReader(b))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	_, _ = lokiClient.Do(req) // fire-and-forget
+}
+
+func mustHostname() string {
+	h, err := os.Hostname()
+	if err != nil || h == "" {
+		return "unknown"
+	}
+	return h
 }

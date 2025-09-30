@@ -64,3 +64,5 @@ metrics:
   # Host ports used for container port mapping
   prometheus_port: 9090
   grafana_port: 3000
+  loki_port: 3100
+  loki_url: "http://localhost:3100"
