@@ -1,8 +1,9 @@
-package upstream
+package applog
 
 import (
 	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -20,13 +21,206 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+var (
+	lokiURL    string
+	lokiOnce   sync.Once
+	lokiClient = &http.Client{Timeout: 200 * time.Millisecond}
+)
+
+func initLoki() {
+	lokiURL = ""
+
+	// Prefer configs/config.yaml|yml
+	cfgFile := ""
+	for _, c := range []string{"configs/config.yaml", "configs/config.yml"} {
+		if _, err := os.Stat(c); err == nil {
+			cfgFile = c
+			break
+		}
+	}
+	if cfgFile != "" {
+		var cfg struct {
+			Metrics *struct {
+				LokiURL string `yaml:"loki_url"`
+			} `yaml:"metrics"`
+		}
+		if b, err := os.ReadFile(cfgFile); err == nil {
+			if err := yaml.Unmarshal(b, &cfg); err == nil {
+				if cfg.Metrics != nil && strings.TrimSpace(cfg.Metrics.LokiURL) != "" {
+					lokiURL = strings.TrimSpace(cfg.Metrics.LokiURL)
+				}
+			}
+		}
+	}
+
+	// Normalize to full push path if base URL provided
+	if lokiURL != "" && !strings.Contains(lokiURL, "/loki/api/v1/push") {
+		lokiURL = strings.TrimRight(lokiURL, "/") + "/loki/api/v1/push"
+	}
+}
+
+// PushLoki sends a single log line with labels to Loki (no-op if not configured).
+func PushLoki(app string, labels map[string]string, line string) {
+	lokiOnce.Do(initLoki)
+	if lokiURL == "" {
+		return
+	}
+
+	lbls := map[string]string{"app": app}
+	for k, v := range labels {
+		if strings.TrimSpace(k) == "" {
+			continue
+		}
+		lbls[k] = v
+	}
+
+	ts := strconv.FormatInt(time.Now().UnixNano(), 10)
+	payload := struct {
+		Streams []struct {
+			Stream map[string]string `json:"stream"`
+			Values [][2]string       `json:"values"`
+		} `json:"streams"`
+	}{
+		Streams: []struct {
+			Stream map[string]string `json:"stream"`
+			Values [][2]string       `json:"values"`
+		}{
+			{Stream: lbls, Values: [][2]string{{ts, line}}},
+		},
+	}
+
+	b, _ := json.Marshal(payload)
+	req, err := http.NewRequest("POST", lokiURL, bytes.NewReader(b))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	_, _ = lokiClient.Do(req) // fire-and-forget
+}
+
+// MustHostname returns the current hostname or "unknown" on error.
+func MustHostname() string {
+	h, err := os.Hostname()
+	if err != nil || h == "" {
+		return "unknown"
+	}
+	return h
+}
+
+// ------------- shared helpers ------------
+
+func logEnabled() bool {
+	// In test binaries, the testing package registers these flags.
+	if flag.Lookup("test.v") != nil || flag.Lookup("test.run") != nil || flag.Lookup("test.bench") != nil {
+		return false
+	}
+	return true
+}
+
+func parseCacheControlList(v string) []string {
+	if v == "" {
+		return nil
+	}
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(strings.ToLower(p))
+		if p == "" {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+func isMetricsScrape(r *http.Request) bool {
+	if r.URL != nil && r.URL.Path == "/metrics" {
+		return true
+	}
+	if strings.Contains(r.Header.Get("User-Agent"), "Prometheus") {
+		return true
+	}
+	if strings.Contains(r.Header.Get("Accept"), "openmetrics") {
+		return true
+	}
+	return false
+}
+
+// ------------- proxy logging ------------
+
+// LogProxyRequestCacheHit logs details of a cache hit in the same pattern as upstream server logs.
+func LogProxyRequestCacheHit(r *http.Request) {
+	line := fmt.Sprintf(
+		"REQ remote=%s method=%s url=%s proto=%s req-content-length=%s headers=%v | CACHE HIT",
+		r.RemoteAddr,
+		r.Method,
+		r.URL.RequestURI(),
+		r.Proto,
+		r.Header.Get("Content-Length"),
+		r.Header,
+	)
+	if logEnabled() {
+		log.Print(line)
+	}
+
+	// Push to Loki (exact same line as local log)
+	PushLoki("proxy", map[string]string{
+		"method": r.Method,
+		"status": "200",
+		"cache":  "HIT",
+		"host":   MustHostname(),
+	}, line)
+}
+
+// LogProxyResponseCacheHit logs details of a response and records Prometheus metrics using response headers (including X-Cache).
+func LogProxyResponseCacheHit(status int, bytes int, dur time.Duration, respHeaders http.Header, req *http.Request, _ http.ResponseWriter, notModified bool, respBodyNote string) {
+	line := fmt.Sprintf(
+		"RESP status=%d bytes=%d dur=%s resp-content-length=%s resp_headers=%v | cache:req_cc=%v resp_cc=%v etag=%q last-modified=%q expires=%q age=%q via=%q x-cache=%q not-modified=%t%s",
+		status,
+		bytes,
+		dur.String(),
+		respHeaders.Get("Content-Length"),
+		respHeaders,
+		parseCacheControlList(req.Header.Get("Cache-Control")),
+		parseCacheControlList(respHeaders.Get("Cache-Control")),
+		respHeaders.Get("ETag"),
+		respHeaders.Get("Last-Modified"),
+		respHeaders.Get("Expires"),
+		respHeaders.Get("Age"),
+		respHeaders.Get("Via"),
+		respHeaders.Get("X-Cache"),
+		notModified,
+		respBodyNote,
+	)
+	if logEnabled() {
+		log.Print(line)
+	}
+
+	cacheLabel := respHeaders.Get("X-Cache")
+
+	// Push to Loki (exact same line as local log)
+	up := respHeaders.Get("X-Upstream")
+	if strings.TrimSpace(up) == "" {
+		up = "unknown"
+	}
+	PushLoki("proxy", map[string]string{
+		"method":   req.Method,
+		"status":   strconv.Itoa(status),
+		"cache":    cacheLabel,
+		"upstream": up,
+		"host":     MustHostname(),
+	}, line)
+}
+
+// ------------- upstream logging ------------
+
 // loggingResponseWriter captures status code and bytes written.
 type loggingResponseWriter struct {
 	http.ResponseWriter
 	status     int
 	n          int
-	preview    []byte   // response body preview
-	maxPreview int      // max preview bytes
+	preview    []byte // response body preview
+	maxPreview int    // max preview bytes
 }
 
 func (w *loggingResponseWriter) WriteHeader(code int) {
@@ -62,12 +256,11 @@ type rcCombiner struct {
 
 func (r rcCombiner) Close() error { return r.closer.Close() }
 
-// withRequestLogging logs request/response details for every request.
-func withRequestLogging(next http.Handler) http.Handler {
+// WithRequestLogging logs request/response details for every request and emits Loki + Prometheus metrics.
+func WithRequestLogging(next http.Handler) http.Handler {
 	const maxBodyPreview = 8 << 10 // 8KB
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Fast-path: do not log or record metrics for Prometheus scrapes.
-		// This aligns with proxy behavior where /metrics is not proxied/measured.
 		if isMetricsScrape(r) {
 			next.ServeHTTP(w, r)
 			return
@@ -147,9 +340,9 @@ func withRequestLogging(next http.Handler) http.Handler {
 		)
 		log.Print(reqLine)
 		// Push the exact same request line to Loki
-		pushLoki("upstream", map[string]string{
+		PushLoki("upstream", map[string]string{
 			"method":     r.Method,
-			"host":       mustHostname(),
+			"host":       MustHostname(),
 			"request_id": r.Header.Get("X-Request-ID"),
 		}, reqLine)
 
@@ -170,8 +363,8 @@ func withRequestLogging(next http.Handler) http.Handler {
 		}
 
 		// Cache-related details.
-		reqCC := parseCacheControl(r.Header.Get("Cache-Control"))
-		respCC := parseCacheControl(lrw.Header().Get("Cache-Control"))
+		reqCC := parseCacheControlList(r.Header.Get("Cache-Control"))
+		respCC := parseCacheControlList(lrw.Header().Get("Cache-Control"))
 		notModified := lrw.status == http.StatusNotModified
 
 		// Response cache headers
@@ -219,18 +412,20 @@ func withRequestLogging(next http.Handler) http.Handler {
 		// Push to Loki using the exact same response line
 		upID := lrw.Header().Get("X-Upstream")
 		reqID := r.Header.Get("X-Request-ID")
-		pushLoki("upstream", map[string]string{
+		PushLoki("upstream", map[string]string{
 			"method":     r.Method,
 			"status":     strconv.Itoa(status),
 			"upstream":   upID,
-			"host":       mustHostname(),
+			"host":       MustHostname(),
 			"request_id": reqID,
 		}, respLine)
 	})
 }
 
-// withRequestID assigns a unique ID to each request and includes it in the logs.
-func withRequestID(next http.Handler) http.Handler {
+var requestCounter int64
+
+// WithRequestID assigns a unique ID to each request and includes it in the logs.
+func WithRequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Skip logging/headers for Prometheus scrapes
 		if isMetricsScrape(r) {
@@ -243,10 +438,10 @@ func withRequestID(next http.Handler) http.Handler {
 		preLine := fmt.Sprintf("REQ_ID=%s method=%s url=%s", reqID, r.Method, r.URL.Path)
 		log.Print(preLine)
 		// Push the exact same REQ_ID pre line to Loki
-		pushLoki("upstream", map[string]string{
+		PushLoki("upstream", map[string]string{
 			"request_id": reqID,
 			"method":     r.Method,
-			"host":       mustHostname(),
+			"host":       MustHostname(),
 		}, preLine)
 
 		next.ServeHTTP(w, r)
@@ -254,128 +449,10 @@ func withRequestID(next http.Handler) http.Handler {
 		postLine := fmt.Sprintf("REQ_ID=%s completed", reqID)
 		log.Print(postLine)
 		// Push the exact same REQ_ID completion line to Loki
-		pushLoki("upstream", map[string]string{
+		PushLoki("upstream", map[string]string{
 			"request_id": reqID,
 			"method":     r.Method,
-			"host":       mustHostname(),
+			"host":       MustHostname(),
 		}, postLine)
 	})
-}
-
-// parseCacheControl splits Cache-Control into normalized directives for logging.
-func parseCacheControl(v string) []string {
-	if v == "" {
-		return nil
-	}
-	parts := strings.Split(v, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(strings.ToLower(p))
-		if p == "" {
-			continue
-		}
-		out = append(out, p)
-	}
-	return out
-}
-
-// Identify Prometheus /metrics scrapes to reduce logging noise
-func isMetricsScrape(r *http.Request) bool {
-	if r.URL != nil && r.URL.Path == "/metrics" {
-		return true
-	}
-	if strings.Contains(r.Header.Get("User-Agent"), "Prometheus") {
-		return true
-	}
-	if strings.Contains(r.Header.Get("Accept"), "openmetrics") {
-		return true
-	}
-	return false
-}
-
-// ------- Loki push (opt-in via env LOKI_URL) -------
-
-var (
-	lokiURL    string
-	lokiOnce   sync.Once
-	lokiClient = &http.Client{Timeout: 200 * time.Millisecond}
-)
-
-func initLoki() {
-	lokiURL = ""
-	cfgFile := ""
-	for _, c := range []string{"configs/config.yaml", "configs/config.yml"} {
-		if _, err := os.Stat(c); err == nil {
-			cfgFile = c
-			break
-		}
-	}
-	if cfgFile != "" {
-		var cfg struct {
-			Metrics *struct {
-				LokiURL string `yaml:"loki_url"`
-			} `yaml:"metrics"`
-		}
-		if b, err := os.ReadFile(cfgFile); err == nil {
-			if err := yaml.Unmarshal(b, &cfg); err == nil {
-				if cfg.Metrics != nil && strings.TrimSpace(cfg.Metrics.LokiURL) != "" {
-					lokiURL = strings.TrimSpace(cfg.Metrics.LokiURL)
-				}
-			}
-		}
-	}
-
-	// Accept values like "http://localhost:3100" or full push path
-	if lokiURL != "" && !strings.Contains(lokiURL, "/loki/api/v1/push") {
-		lokiURL = strings.TrimRight(lokiURL, "/") + "/loki/api/v1/push"
-	}
-}
-
-func pushLoki(app string, labels map[string]string, line string) {
-	lokiOnce.Do(initLoki)
-	if lokiURL == "" {
-		return // disabled until LOKI_URL is set
-	}
-
-	// Safe, low-cardinality labels to help Grafana drilldown from metrics
-	lbls := map[string]string{
-		"app": app,
-	}
-	for k, v := range labels {
-		if strings.TrimSpace(k) == "" {
-			continue
-		}
-		lbls[k] = v
-	}
-
-	ts := strconv.FormatInt(time.Now().UnixNano(), 10)
-	payload := struct {
-		Streams []struct {
-			Stream map[string]string `json:"stream"`
-			Values [][2]string       `json:"values"`
-		} `json:"streams"`
-	}{
-		Streams: []struct {
-			Stream map[string]string `json:"stream"`
-			Values [][2]string       `json:"values"`
-		}{
-			{Stream: lbls, Values: [][2]string{{ts, line}}},
-		},
-	}
-
-	b, _ := json.Marshal(payload)
-	req, err := http.NewRequest("POST", lokiURL, bytes.NewReader(b))
-	if err != nil {
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	_, _ = lokiClient.Do(req) // fire-and-forget
-}
-
-func mustHostname() string {
-	h, err := os.Hostname()
-	if err != nil || h == "" {
-		return "unknown"
-	}
-	return h
 }

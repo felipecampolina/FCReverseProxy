@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	applog "traefik-challenge-2/internal/log"
 	imetrics "traefik-challenge-2/internal/metrics"
 )
 
@@ -170,7 +171,7 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 			if cached, ok, stale := p.cache.Get(key); ok && !stale {
 				// Log cache hit
-				logRequestCacheHit(r)
+				applog.LogProxyRequestCacheHit(r)
 
 				// Write cached response
 				copyHeader(w.Header(), cached.Header)
@@ -189,7 +190,7 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				imetrics.ObserveProxyResponse(r.Method, cached.StatusCode, "HIT", time.Since(start))
 
 				// Log response
-				logResponseCacheHit(
+				applog.LogProxyResponseCacheHit(
 					cached.StatusCode,
 					len(cached.Body),
 					time.Since(start),
@@ -320,7 +321,7 @@ func (p *ReverseProxy) serveUpstream(w http.ResponseWriter, r *http.Request) {
 	imetrics.ObserveProxyResponse(r.Method, status, xcache, time.Since(reqStart))
 
 	// Log response
-	logResponseCacheHit(
+	applog.LogProxyResponseCacheHit(
 		status,
 		len(buf),
 		dur,

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	applog "traefik-challenge-2/internal/log"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -90,8 +91,6 @@ func (s *store) delete(id int) bool {
 	delete(s.data, id)
 	return true
 }
-
-var requestCounter int64
 
 // Start boots the upstream example server on the provided address.
 func Start(addr string) error {
@@ -220,8 +219,8 @@ func Start(addr string) error {
 	}
 	log.Printf("Upstream example server listening on %s", l.Addr().String())
 	upID := l.Addr().String()
-	chain := withRequestID(
-		withRequestLogging(
+	chain := applog.WithRequestID(
+		applog.WithRequestLogging(
 			withServerHeaders(
 				withUpstreamHeader(upID, mux),
 			),
