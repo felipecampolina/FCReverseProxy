@@ -63,8 +63,7 @@ build:
 
 
 test:
-	go test ./internal/proxy -v
-	go test ./internal/config -v
+	go test ./test -v
 
 clean:
 	rm -rf bin/

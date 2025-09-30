@@ -1,7 +1,6 @@
 package proxy_test
 
 import (
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"traefik-challenge-2/internal/proxy"
+	proxy "traefik-challenge-2/internal/proxy"
 )
 
 var (
@@ -21,16 +20,6 @@ var (
 	_pkgBannerPrinted = map[string]struct{}{}
 )
 
-func banner(file string) {
-	_pkgBannerMu.Lock()
-	if _, ok := _pkgBannerPrinted[file]; ok {
-		_pkgBannerMu.Unlock()
-		return
-	}
-	_pkgBannerPrinted[file] = struct{}{}
-	_pkgBannerMu.Unlock()
-	fmt.Printf("\n===== BEGIN TEST FILE: internal/proxy/%s =====\n", file)
-}
 
 func newProxy(t *testing.T, target *url.URL, cache proxy.Cache, cacheOn bool, qcfg *proxy.QueueConfig) http.Handler {
 	t.Helper()

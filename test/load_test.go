@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"traefik-challenge-2/internal/proxy"
+	proxy "traefik-challenge-2/internal/proxy"
 )
 
 func TestHighVolume(t *testing.T) {

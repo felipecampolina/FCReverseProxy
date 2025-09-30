@@ -1,4 +1,4 @@
-package proxy
+package proxy_test
 
 import (
 	"fmt"
@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"sync"
 	"testing"
+	proxy "traefik-challenge-2/internal/proxy"
 )
 
 var (
@@ -43,7 +44,7 @@ func TestRoundRobinBalancer(t *testing.T) {
 		mustURL(t, "http://three"),
 	}
 	// Disable health checks in tests
-	b := NewRoundRobinBalancer(targets, false)
+	b := proxy.NewRoundRobinBalancer(targets, false)
 
 	seq := []string{}
 	for i := 0; i < 6; i++ {
@@ -67,7 +68,7 @@ func TestLeastConnectionsBalancerBasic(t *testing.T) {
 		mustURL(t, "http://c"),
 	}
 	// Disable health checks in tests 
-	b := NewLeastConnectionsBalancer(targets, false)
+	b := proxy.NewLeastConnectionsBalancer(targets, false)
 
 	// First pick: all zero -> picks 'a'
 	a := b.Pick(false)
@@ -132,7 +133,7 @@ func TestRoundRobinBalancerHealthChecks(t *testing.T) {
 		mustURL(t, upHealthy1.URL),
 		mustURL(t, upHealthy2.URL),
 	}
-	b := NewRoundRobinBalancer(targets, true)
+	b := proxy.NewRoundRobinBalancer(targets, true)
 
 	seenHealthy1 := false
 	seenHealthy2 := false
@@ -176,7 +177,7 @@ func TestRoundRobinBalancerHealthAllUnhealthy(t *testing.T) {
 		mustURL(t, upBad1.URL),
 		mustURL(t, upBad2.URL),
 	}
-	b := NewRoundRobinBalancer(targets, true)
+	b := proxy.NewRoundRobinBalancer(targets, true)
 
 	u := b.Pick(false)
 	if u != nil {

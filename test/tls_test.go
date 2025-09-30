@@ -1,4 +1,4 @@
-package config_test
+package proxy_test
 
 import (
 	"crypto/ecdsa"
@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"traefik-challenge-2/internal/config"
+	config "traefik-challenge-2/internal/config"
 )
 
 // --- Helpers ---

@@ -1,4 +1,4 @@
-package proxy
+package proxy_test
 
 import (
 	"encoding/json"
@@ -18,6 +18,7 @@ import (
 	"encoding/pem"
 	"math/big"
 	"net"
+	proxy "traefik-challenge-2/internal/proxy"
 )
 
 
@@ -84,7 +85,7 @@ func TestProxyRoundRobinWithCache(t *testing.T) {
 
 	targets := []*url.URL{mustParse(t, up1.URL), mustParse(t, up2.URL)}
 
-	rp := NewReverseProxyMulti(targets, NewLRUCache(128), true)
+	rp := proxy.NewReverseProxyMulti(targets, proxy.NewLRUCache(128), true)
 	// Disable active health checks for these test
 	rp.SetHealthCheckEnabled(false)
 	rp.ConfigureBalancer("rr")
@@ -157,7 +158,7 @@ func TestProxyLeastConnections(t *testing.T) {
 
 	targets := []*url.URL{mustParse(t, upSlow.URL), mustParse(t, upFast.URL)}
 
-	rp := NewReverseProxyMulti(targets, NewLRUCache(64), true)
+	rp := proxy.NewReverseProxyMulti(targets, proxy.NewLRUCache(64), true)
 	// Disable active health checks for these tests; httptest upstreams lack /healthz
 	rp.SetHealthCheckEnabled(false)
 	rp.ConfigureBalancer("least_conn")
@@ -252,7 +253,7 @@ func TestProxyOverHTTPS(t *testing.T) {
 	defer up.Close()
 
 	targets := []*url.URL{mustParse(t, up.URL)}
-	rp := NewReverseProxyMulti(targets, NewLRUCache(32), true)
+	rp := proxy.NewReverseProxyMulti(targets, proxy.NewLRUCache(32), true)
 	// Disable active health checks for these tests; httptest upstreams lack /healthz
 	rp.SetHealthCheckEnabled(false)
 	rp.ConfigureBalancer("rr")
