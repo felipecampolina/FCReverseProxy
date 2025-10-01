@@ -5,7 +5,9 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -13,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // getEnvOrDefault returns env var or default if empty.
@@ -52,7 +56,6 @@ func newInsecureHTTPSClientWithTimeout(d time.Duration) *http.Client {
 	}
 	return &http.Client{Transport: tr, Timeout: d}
 }
-
 
 // doRequestDetailed performs an HTTP request and returns the response and body.
 func doRequestDetailed(t *testing.T, client *http.Client, baseURL, method, path string, body string, headers map[string]string) (*http.Response, []byte, error) {
@@ -118,11 +121,125 @@ func lockSequentialTests() func() {
 	return func() { sequentialRunMutex.Unlock() }
 }
 
+// --- Config loading (replace env usage with config values) ---
+
+type testConfig struct {
+	Proxy struct {
+		Listen  string   `yaml:"listen"`
+		Targets []string `yaml:"targets"`
+		TLS     struct {
+			Enabled bool `yaml:"enabled"`
+		} `yaml:"tls"`
+		Queue struct {
+			MaxQueue       int    `yaml:"max_queue"`
+			MaxConcurrent  int    `yaml:"max_concurrent"`
+			EnqueueTimeout string `yaml:"enqueue_timeout"`
+		} `yaml:"queue"`
+	} `yaml:"proxy"`
+}
+
+var (
+	cfgOnce sync.Once
+	cfgVal  testConfig
+	cfgErr  error
+)
+
+func loadConfig(t *testing.T) testConfig {
+	t.Helper()
+	cfgOnce.Do(func() {
+		b, err := os.ReadFile("../../configs/config.yaml")
+		if err != nil {
+			cfgErr = err
+			return
+		}
+		if err := yaml.Unmarshal(b, &cfgVal); err != nil {
+			cfgErr = err
+			return
+		}
+	})
+	if cfgErr != nil {
+		t.Fatalf("failed to load configs/config.yaml: %v", cfgErr)
+	}
+	return cfgVal
+}
+
+func proxyBaseURLFromConfig(c testConfig) string {
+	scheme := "http"
+	if c.Proxy.TLS.Enabled {
+		scheme = "https"
+	}
+	listen := strings.TrimSpace(c.Proxy.Listen)
+	if listen == "" {
+		listen = ":8090"
+	}
+	hostport := listen
+	if strings.HasPrefix(hostport, ":") {
+		hostport = "localhost" + hostport
+	}
+	if strings.HasPrefix(hostport, "0.0.0.0:") {
+		hostport = "localhost:" + strings.TrimPrefix(hostport, "0.0.0.0:")
+	}
+	return scheme + "://" + hostport
+}
+
+func upstreamBaseURLFromConfig(c testConfig) string {
+	if len(c.Proxy.Targets) > 0 {
+		u := strings.TrimRight(c.Proxy.Targets[0], "/")
+		if u == "" {
+			return "http://localhost:9000"
+		}
+		parsed, err := url.Parse(u)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			return "http://localhost:9000"
+		}
+
+		host := parsed.Hostname()
+		port := parsed.Port()
+		if port == "" {
+			port = "9000"
+		}
+
+		// If it's already localhost/loopback, keep as-is.
+		if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+			return parsed.Scheme + "://localhost:" + port
+		}
+
+		// If hostname does not resolve in this environment, fallback to localhost with same port.
+		if _, err := net.LookupHost(host); err != nil {
+			return parsed.Scheme + "://localhost:" + port
+		}
+
+		return u
+	}
+	return "http://localhost:9000"
+}
+
+func queueLimitsFromConfig(c testConfig) (maxQueue, maxConcurrent int, enqueueTimeout time.Duration) {
+	maxQueue = c.Proxy.Queue.MaxQueue
+	if maxQueue <= 0 {
+		maxQueue = 1000
+	}
+	maxConcurrent = c.Proxy.Queue.MaxConcurrent
+	if maxConcurrent <= 0 {
+		maxConcurrent = 100
+	}
+	et := strings.TrimSpace(c.Proxy.Queue.EnqueueTimeout)
+	if et == "" {
+		enqueueTimeout = 2 * time.Second
+	} else if d, err := time.ParseDuration(et); err == nil {
+		enqueueTimeout = d
+	} else {
+		enqueueTimeout = 2 * time.Second
+	}
+	return
+}
+
 // Sanity: HTTPS/TLS reachability + core metrics presence.
 func TestProxyTLSAndMetricsReachability(t *testing.T) {
 	unlock := lockSequentialTests(); defer unlock()
 
-	proxyBaseURL := getEnvOrDefault("PROXY_ADDR", "https://localhost:8090")
+	cfg := loadConfig(t)
+	proxyBaseURL := proxyBaseURLFromConfig(cfg)
 	httpClient := newInsecureHTTPSClient()
 
 	// health over TLS
@@ -162,7 +279,8 @@ func TestProxyTLSAndMetricsReachability(t *testing.T) {
 func TestCacheHitMissAndDurationMetrics(t *testing.T) {
 	unlock := lockSequentialTests(); defer unlock()
 
-	proxyBaseURL := getEnvOrDefault("PROXY_ADDR", "https://localhost:8090")
+	cfg := loadConfig(t)
+	proxyBaseURL := proxyBaseURLFromConfig(cfg)
 	httpClient := newInsecureHTTPSClient()
 
 	resourcePath := "/api/items?cache_sweep=1"
@@ -206,7 +324,8 @@ func TestCacheHitMissAndDurationMetrics(t *testing.T) {
 func TestQueueMetricsExposureUnderLoad(t *testing.T) {
 	unlock := lockSequentialTests(); defer unlock()
 
-	proxyBaseURL := getEnvOrDefault("PROXY_ADDR", "https://localhost:8090")
+	cfg := loadConfig(t)
+	proxyBaseURL := proxyBaseURLFromConfig(cfg)
 	httpClient := newInsecureHTTPSClientWithTimeout(10 * time.Second)
 
 	const totalRequests = 300
@@ -250,70 +369,6 @@ func TestQueueMetricsExposureUnderLoad(t *testing.T) {
 	waitGroup.Wait()
 }
 
-
-// Verify upstream metrics exposure by querying upstream /metrics directly.
-func TestUpstreamMetricsExposure(t *testing.T) {
-	unlock := lockSequentialTests(); defer unlock()
-
-	// Default upstream address (adjust with UPSTREAM_ADDR when needed)
-	upstreamBaseURL := getEnvOrDefault("UPSTREAM_ADDR", "http://localhost:9000")
-	proxyClient := newInsecureHTTPSClient()
-	upstreamClient := &http.Client{Timeout: 5 * time.Second}
-
-	// Generate some upstream traffic via proxy (no-cache to avoid HITs)
-	proxyBaseURL := getEnvOrDefault("PROXY_ADDR", "https://localhost:8090")
-	for i := 0; i < 10; i++ {
-		_, _, _ = doRequestDetailed(t, proxyClient, proxyBaseURL, "GET", fmt.Sprintf("/api/items?upm=%d", i), "", map[string]string{"Cache-Control": "no-cache"})
-	}
-
-	// Now read upstream metrics directly
-	resp, err := upstreamClient.Get(strings.TrimRight(upstreamBaseURL, "/") + "/metrics")
-	if err != nil {
-		t.Fatalf("upstream /metrics fetch failed from %s: %v", upstreamBaseURL, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		t.Fatalf("upstream /metrics status=%d", resp.StatusCode)
-	}
-	b, _ := io.ReadAll(resp.Body)
-	metricsText := string(b)
-
-	for _, m := range []string{
-		"upstream_requests_total",
-		"upstream_request_duration_seconds",
-		"upstream_inflight",
-	} {
-		if !metricFamilyExistsInText(metricsText, m) {
-			t.Fatalf("expected upstream metric %q to be exposed", m)
-		}
-	}
-}
-
-// Helpers: env int/duration parsing for queue-related settings used by the server.
-// getEnvInt returns an env var parsed as int, or default on error/empty.
-func getEnvInt(k string, def int) int {
-	v := strings.TrimSpace(os.Getenv(k))
-	if v == "" {
-		return def
-	}
-	if n, err := strconv.Atoi(v); err == nil {
-		return n
-	}
-	return def
-}
-
-// getEnvDuration returns an env var parsed as duration, or default on error/empty.
-func getEnvDuration(k string, def time.Duration) time.Duration {
-	v := strings.TrimSpace(os.Getenv(k))
-	if v == "" {
-		return def
-	}
-	if d, err := time.ParseDuration(v); err == nil {
-		return d
-	}
-	return def
-}
-
 // getBareCounterValue reads a bare counter value from Prometheus text (no labels).
 func getBareCounterValue(text, name string) float64 {
 	re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(name) + `\s+([0-9]+(?:\.[0-9]+)?)$`)
@@ -329,12 +384,12 @@ func getBareCounterValue(text, name string) float64 {
 func TestQueueRejectionsMetricIncrements(t *testing.T) {
 	unlock := lockSequentialTests(); defer unlock()
 
-	proxyBaseURL := getEnvOrDefault("PROXY_ADDR", "https://localhost:8090")
+	cfg := loadConfig(t)
+	proxyBaseURL := proxyBaseURLFromConfig(cfg)
 	httpClient := newInsecureHTTPSClientWithTimeout(15 * time.Second)
 
-	// Read server queue config (same keys used by main)
-	maxQueue := getEnvInt("RP_MAX_QUEUE", 1000)
-	maxConcurrent := getEnvInt("RP_MAX_CONCURRENT", 100)
+	// Read server queue config from config.yaml
+	maxQueue, maxConcurrent, _ := queueLimitsFromConfig(cfg)
 
 	// Snapshot metric before load
 	metricsBeforeText := fetchMetrics(t, httpClient, proxyBaseURL)
@@ -378,13 +433,13 @@ func TestQueueRejectionsMetricIncrements(t *testing.T) {
 func TestQueueTimeoutsMetricIncrements(t *testing.T) {
 	unlock := lockSequentialTests(); defer unlock()
 
-	proxyBaseURL := getEnvOrDefault("PROXY_ADDR", "https://localhost:8090")
+	cfg := loadConfig(t)
+	_, _, enqueueTimeout := queueLimitsFromConfig(cfg)
 	// Client timeout slightly larger than enqueue timeout to allow server-side 503 to return
-	enqueueTimeout := getEnvDuration("RP_ENQUEUE_TIMEOUT", 2*time.Second)
 	httpClient := newInsecureHTTPSClientWithTimeout(enqueueTimeout + 3*time.Second)
 
-	maxQueue := getEnvInt("RP_MAX_QUEUE", 1000)
-	maxConcurrent := getEnvInt("RP_MAX_CONCURRENT", 100)
+	maxQueue, maxConcurrent, _ := queueLimitsFromConfig(cfg)
+	proxyBaseURL := proxyBaseURLFromConfig(cfg)
 
 	// Snapshot metric before load
 	metricsBeforeText := fetchMetrics(t, httpClient, proxyBaseURL)

@@ -148,6 +148,7 @@ func Start(listenAddr string) error {
 	// Items API list/create.
 	mux.HandleFunc("/api/items", func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("REQ method=%s url=%s", r.Method, r.URL.Path)
+		w.Header().Set("Cache-Control", "public, max-age=10, s-maxage=10")
 		switch r.Method {
 		case http.MethodGet:
 			writeJSON(w, http.StatusOK, dataStore.list())
@@ -174,6 +175,7 @@ func Start(listenAddr string) error {
 
 	// Items API get/update/delete.
 	mux.HandleFunc("/api/items/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=10, s-maxage=10")
 		log.Printf("REQ method=%s url=%s", r.Method, r.URL.Path)
 		// path: /api/items/{id}
 		itemID, ok := parseID(strings.TrimPrefix(r.URL.Path, "/api/items/"))
