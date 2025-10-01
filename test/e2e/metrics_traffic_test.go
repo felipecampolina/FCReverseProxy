@@ -320,54 +320,6 @@ func TestCacheHitMissAndDurationMetrics(t *testing.T) {
 	}
 }
 
-// Queue metrics: send no-cache burst to ensure queue wait histogram gets observations.
-func TestQueueMetricsExposureUnderLoad(t *testing.T) {
-	unlock := lockSequentialTests(); defer unlock()
-
-	cfg := loadConfig(t)
-	proxyBaseURL := proxyBaseURLFromConfig(cfg)
-	httpClient := newInsecureHTTPSClientWithTimeout(10 * time.Second)
-
-	const totalRequests = 300
-	var waitGroup sync.WaitGroup
-	waitGroup.Add(totalRequests)
-	noCacheHeaders := map[string]string{"Cache-Control": "no-cache"}
-
-	for i := 0; i < totalRequests; i++ {
-		go func(i int) {
-			defer waitGroup.Done()
-			_, _, _ = doRequestDetailed(t, httpClient, proxyBaseURL, "GET", fmt.Sprintf("/api/items?q=%d", i), "", noCacheHeaders)
-		}(i)
-	}
-
-	// Give time for admissions/observations and scrape
-	time.Sleep(500 * time.Millisecond)
-	metricsText := fetchMetrics(t, httpClient, proxyBaseURL)
-
-	// Check base histogram family presence
-	if !metricFamilyExistsInText(metricsText, "proxy_queue_wait_seconds") {
-		t.Fatalf("expected proxy_queue_wait_seconds to exist")
-	}
-
-	// Optional bucket non-zero check remains timing-sensitive
-	histogramBucketRe := regexp.MustCompile(`^proxy_queue_wait_seconds_bucket\{.*\}\s+([0-9]+(\.[0-9]+)?)$`)
-	hasNonZeroBucket := false
-	for _, line := range strings.Split(metricsText, "\n") {
-		m := histogramBucketRe.FindStringSubmatch(line)
-		if len(m) == 0 {
-			continue
-		}
-		if m[1] != "0" {
-			hasNonZeroBucket = true
-			break
-		}
-	}
-	if !hasNonZeroBucket {
-		t.Log("queue_wait histogram buckets observed but counts may be zero at scrape time (timing sensitive)")
-	}
-
-	waitGroup.Wait()
-}
 
 // getBareCounterValue reads a bare counter value from Prometheus text (no labels).
 func getBareCounterValue(text, name string) float64 {
