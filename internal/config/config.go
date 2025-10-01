@@ -36,6 +36,7 @@ type Config struct {
 type CacheConfig struct {
 	Enabled    bool
 	MaxEntries int
+	TTL        time.Duration
 }
 
 const (
@@ -49,6 +50,7 @@ const (
 	defaultAllowedMethods      = "GET,HEAD,POST,PUT,PATCH,DELETE"
 	defaultLBHealthCheck       = true
 	defaultLBStrategy          = "rr"
+	defaultCacheTTL            = 60 * time.Second
 )
 
 // --- YAML model (pointers used so we can distinguish "omitted" vs "false/zero") ---
@@ -72,8 +74,9 @@ type yamlProxy struct {
 
 // yamlCache mirrors the "proxy.cache" section.
 type yamlCache struct {
-	Enabled    *bool `yaml:"enabled"`
-	MaxEntries *int  `yaml:"max_entries"`
+	Enabled    *bool   `yaml:"enabled"`
+	MaxEntries *int    `yaml:"max_entries"`
+	TTL        *string `yaml:"ttl"`
 }
 
 // yamlQueue mirrors the "proxy.queue" section.
@@ -126,6 +129,7 @@ func Load() (*Config, error) {
 		Cache: CacheConfig{
 			Enabled:    defaultCacheEnabled,
 			MaxEntries: defaultCacheMaxEntries,
+			TTL:        defaultCacheTTL,
 		},
 		Queue: proxy.QueueConfig{
 			MaxQueue:        defaultQueueMax,
@@ -191,6 +195,13 @@ func Load() (*Config, error) {
 		if yamlRootCfg.Proxy.Cache.MaxEntries != nil && *yamlRootCfg.Proxy.Cache.MaxEntries > 0 {
 			cfg.Cache.MaxEntries = *yamlRootCfg.Proxy.Cache.MaxEntries
 		}
+		if yamlRootCfg.Proxy.Cache.TTL != nil && strings.TrimSpace(*yamlRootCfg.Proxy.Cache.TTL) != "" {
+			if parsed, err := time.ParseDuration(strings.TrimSpace(*yamlRootCfg.Proxy.Cache.TTL)); err == nil && parsed > 0 {
+				cfg.Cache.TTL = parsed
+			} else if err != nil {
+				return nil, fmt.Errorf("config: invalid cache.ttl: %v", err)
+			}
+		}
 	}
 
 	// Queue section (optional).
@@ -226,6 +237,9 @@ func Load() (*Config, error) {
 			cfg.TLS.KeyFile = strings.TrimSpace(*yamlRootCfg.Proxy.TLS.KeyFile)
 		}
 	}
+
+	// Apply default cache TTL to proxy package.
+	proxy.SetDefaultCacheTTL(cfg.Cache.TTL)
 
 	return cfg, nil
 }

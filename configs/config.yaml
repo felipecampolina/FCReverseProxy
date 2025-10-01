@@ -24,7 +24,7 @@ proxy:
   # Prefer 'targets' (list). If a single upstream is used, a 'target' scalar may be supported by the app.
   # Targets must be absolute URLs with scheme (http) and host:port.
   # Example: ["http://localhost:9000", "http://localhost:9001"]
-  targets: ["http://localhost:9000", "http://localhost:9001", "http://localhost:9002", "http://localhost:9003", "http://localhost:9004"]
+ targets: ["http://localhost:9000", "http://localhost:9001", "http://localhost:9002", "http://localhost:9003", "http://localhost:9004"]
 
   # Load balancer selection strategy: rr (round-robin) | lc (least-connections).
   # If unset, defaults to rr.
@@ -42,9 +42,11 @@ proxy:
   # Response cache configuration. Controls in-memory caching of successful responses.
   # - enabled: toggles caching
   # - max_entries: upper bound on cache size (number of unique responses/keys)
+  # - ttl: TTL used when upstream responses don't specify cache directives
   cache:
     enabled: true
     max_entries: 2048
+    ttl: "5s"
 
   # Request queue and concurrency controls to apply backpressure under load.
   # - max_concurrent: upper bound on in-flight requests to upstreams.

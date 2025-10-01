@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -60,6 +61,33 @@ type upstreamTargetCtxKey struct{}
 // add context key for request start time (end-to-end measurement)
 type startTimeCtxKey struct{}
 
+// Globally configurable default cache TTL (used when upstream provides no directives).
+var defaultCacheTTL atomic.Value // stores time.Duration
+
+func init() {
+	defaultCacheTTL.Store(60 * time.Second)
+}
+
+// SetDefaultCacheTTL overrides the global default TTL used when no upstream cache
+// directives are present (e.g., no max-age/s-maxage/Expires), or when a cache Set()
+// is called with ttl <= 0. Non-positive values reset to 60s.
+func SetDefaultCacheTTL(d time.Duration) {
+	if d <= 0 {
+		d = 60 * time.Second
+	}
+	defaultCacheTTL.Store(d)
+}
+
+// getDefaultCacheTTL returns the currently configured default cache TTL.
+func getDefaultCacheTTL() time.Duration {
+	if v := defaultCacheTTL.Load(); v != nil {
+		if d, ok := v.(time.Duration); ok {
+			return d
+		}
+	}
+	return 60 * time.Second
+}
+
 // NewLRUCache creates a new LRU cache with a maximum number of entries.
 // If maxEntries <= 0, it defaults to 1024.
 func NewLRUCache(maxEntries int) Cache {
@@ -99,11 +127,10 @@ func (cache *lruCache) Get(cacheKey string) (*CachedResponse, bool, bool) {
 }
 
 // Set stores a response in the cache with a specified TTL.
-// If ttl <= 0, a default TTL of 60 seconds is applied.
+// If ttl <= 0, the configured default TTL is applied.
 func (cache *lruCache) Set(cacheKey string, response *CachedResponse, ttl time.Duration) {
 	if ttl <= 0 {
-		// Default TTL: 60 seconds if no positive TTL is provided.
-		ttl = 60 * time.Second
+		ttl = getDefaultCacheTTL()
 	}
 	response.ExpiresAt = time.Now().Add(ttl)
 
@@ -252,8 +279,8 @@ func isCacheableResponse(response *http.Response) (ttl time.Duration, ok bool) {
 		}
 	}
 
-	// Default TTL heuristic if nothing else applies.
-	return 60 * time.Second, true
+	// Fallback to configured default TTL when no upstream directives exist.
+	return getDefaultCacheTTL(), true
 }
 
 // parseCacheControl splits a Cache-Control header into a directive map.
