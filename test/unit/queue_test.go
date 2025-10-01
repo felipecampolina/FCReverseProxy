@@ -16,153 +16,166 @@ import (
 
 func TestQueue_ConcurrencyLimitAndQueueing(t *testing.T) {
 	banner("queue_test.go")
-	var concurrent int64
-	var peak int64
-	// upstream that sleeps and tracks concurrency
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		c := atomic.AddInt64(&concurrent, 1)
+
+	// Track live concurrency and the highest concurrency observed.
+	var currentConcurrency int64
+	var peakConcurrency int64
+
+	// Upstream handler simulates work and records concurrency safely.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Increment in-flight counter and capture current value.
+		cur := atomic.AddInt64(&currentConcurrency, 1)
+
+		// Update the peak if this goroutine raises it.
 		for {
-			p := atomic.LoadInt64(&peak)
-			if c <= p || atomic.CompareAndSwapInt64(&peak, p, c) {
+			observedPeak := atomic.LoadInt64(&peakConcurrency)
+			if cur <= observedPeak || atomic.CompareAndSwapInt64(&peakConcurrency, observedPeak, cur) {
 				break
 			}
 		}
+
+		// Simulate upstream latency and then decrement.
 		time.Sleep(200 * time.Millisecond)
-		atomic.AddInt64(&concurrent, -1)
+		atomic.AddInt64(&currentConcurrency, -1)
 		fmt.Fprint(w, "ok")
 	}))
-	t.Cleanup(up.Close)
+	t.Cleanup(upstream.Close)
 
-	tgt, _ := url.Parse(up.URL)
-	rp := proxy.NewReverseProxy(tgt, proxy.NewLRUCache(0), false)
-	rp = rp.WithQueue(proxy.QueueConfig{
+	targetURL, _ := url.Parse(upstream.URL)
+
+	// Reverse proxy with a queue: 1 concurrent, buffer 2, then 429s.
+	reverseProxy := proxy.NewReverseProxy(targetURL, proxy.NewLRUCache(0), false)
+	reverseProxy = reverseProxy.WithQueue(proxy.QueueConfig{
 		MaxQueue:        2,
 		MaxConcurrent:   1,
 		EnqueueTimeout:  time.Second,
 		QueueWaitHeader: true,
 	})
-	// Disable health checks for unit tests
-	rp.SetHealthCheckEnabled(false)
+	// Disable background health checks for deterministic tests.
+	reverseProxy.SetHealthCheckEnabled(false)
 
-	h := rp
+	handler := reverseProxy
 
 	var wg sync.WaitGroup
-	count := 5 // 1 active + 2 queued + 2 rejected
-	codes := make([]int, count)
+	requestCount := 5 // 1 active + 2 queued + 2 rejected (429)
+	statusCodes := make([]int, requestCount)
 
-	for i := 0; i < count; i++ {
+	for i := 0; i < requestCount; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			req := httptest.NewRequest("GET", "/", nil)
-			w := httptest.NewRecorder()
-			h.ServeHTTP(w, req)
-			codes[i] = w.Code
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			statusCodes[i] = rec.Code
 		}(i)
 	}
 	wg.Wait()
 
-	var ok, rejected int
-	for _, c := range codes {
-		switch c {
+	var okCount, rejectedCount int
+	for _, status := range statusCodes {
+		switch status {
 		case http.StatusOK:
-			ok++
+			okCount++
 		case http.StatusTooManyRequests:
-			rejected++
+			rejectedCount++
 		default:
-			t.Fatalf("unexpected status %d", c)
+			t.Fatalf("unexpected status %d", status)
 		}
 	}
 
-	if ok != 3 { // 1 active + 2 queued
-		t.Fatalf("expected 3 OK responses, got %d (codes=%v)", ok, codes)
+	// Expect 1 active + 2 queued to succeed.
+	if okCount != 3 {
+		t.Fatalf("expected 3 OK responses, got %d (codes=%v)", okCount, statusCodes)
 	}
-	if rejected != 2 {
-		t.Fatalf("expected 2 rejections with 429, got %d (codes=%v)", rejected, codes)
+	// Expect the overflow to be rejected with 429.
+	if rejectedCount != 2 {
+		t.Fatalf("expected 2 rejections with 429, got %d (codes=%v)", rejectedCount, statusCodes)
 	}
-	if peak > 1 {
-		t.Fatalf("concurrency exceeded limit: peak=%d", peak)
+	// Concurrency must never exceed the configured limit.
+	if peakConcurrency > 1 {
+		t.Fatalf("concurrency exceeded limit: peak=%d", peakConcurrency)
 	}
 }
 
 func TestQueue_TimeoutWhileWaiting(t *testing.T) {
 	banner("queue_test.go")
-	started := make(chan struct{})
-	var once sync.Once
 
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Signal when the first request actually hits upstream (i.e., holds active)
-		once.Do(func() { close(started) })
-		time.Sleep(2 * time.Second)
+	// Signal when the first request actually reaches upstream.
+	firstRequestStarted := make(chan struct{})
+	var startOnce sync.Once
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		startOnce.Do(func() { close(firstRequestStarted) })
+		time.Sleep(2 * time.Second) // hold the only active slot
 		w.WriteHeader(200)
 	}))
-	t.Cleanup(up.Close)
+	t.Cleanup(upstream.Close)
 
-	tgt, _ := url.Parse(up.URL)
-	rp := proxy.NewReverseProxy(tgt, proxy.NewLRUCache(0), false).WithQueue(proxy.QueueConfig{
+	targetURL, _ := url.Parse(upstream.URL)
+	reverseProxy := proxy.NewReverseProxy(targetURL, proxy.NewLRUCache(0), false).WithQueue(proxy.QueueConfig{
 		MaxQueue:       1,
 		MaxConcurrent:  1,
-		EnqueueTimeout: 10 * time.Millisecond,
+		EnqueueTimeout: 10 * time.Millisecond, // force quick timeout for the queued request
 	})
-	// Disable health checks for unit tests
-	rp.SetHealthCheckEnabled(false)
+	reverseProxy.SetHealthCheckEnabled(false)
 
-	// First request occupies the only active slot
+	// First request occupies the only active slot.
 	go func() {
-		w := httptest.NewRecorder()
-		rp.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+		rec := httptest.NewRecorder()
+		reverseProxy.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
 	}()
 
-	// Wait until the first request is definitely active
-	<-started
+	// Wait until the first request is definitely active.
+	<-firstRequestStarted
 
-	// Second request should time out while queued
-	w2 := httptest.NewRecorder()
-	rp.ServeHTTP(w2, httptest.NewRequest("GET", "/", nil))
-	if w2.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503 for queue wait timeout, got %d", w2.Code)
+	// Second request should time out while queued.
+	recSecond := httptest.NewRecorder()
+	reverseProxy.ServeHTTP(recSecond, httptest.NewRequest("GET", "/", nil))
+	if recSecond.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 for queue wait timeout, got %d", recSecond.Code)
 	}
 }
 
 func TestQueue_ClientCancellationWhileQueued(t *testing.T) {
 	banner("queue_test.go")
 
-	started := make(chan struct{})
-	var once sync.Once
+	// Signal when the first request actually reaches upstream.
+	firstRequestStarted := make(chan struct{})
+	var startOnce sync.Once
 
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		once.Do(func() { close(started) })
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		startOnce.Do(func() { close(firstRequestStarted) })
 		time.Sleep(500 * time.Millisecond)
 		w.WriteHeader(200)
 	}))
-	t.Cleanup(up.Close)
+	t.Cleanup(upstream.Close)
 
-	tgt, _ := url.Parse(up.URL)
-	rp := proxy.NewReverseProxy(tgt, proxy.NewLRUCache(0), false).WithQueue(proxy.QueueConfig{
+	targetURL, _ := url.Parse(upstream.URL)
+	reverseProxy := proxy.NewReverseProxy(targetURL, proxy.NewLRUCache(0), false).WithQueue(proxy.QueueConfig{
 		MaxQueue:       1,
 		MaxConcurrent:  1,
 		EnqueueTimeout: time.Second,
 	})
-	// Disable health checks for unit tests
-	rp.SetHealthCheckEnabled(false)
+	reverseProxy.SetHealthCheckEnabled(false)
 
-	// Fill active slot
+	// Fill active slot with the first request.
 	go func() {
-		w := httptest.NewRecorder()
-		rp.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+		rec := httptest.NewRecorder()
+		reverseProxy.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
 	}()
 
-	// Ensure the first request is actually active
-	<-started
+	// Ensure the first request is actually active.
+	<-firstRequestStarted
 
-	// Second request cancels while queued
+	// Second request cancels while queued.
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	req := httptest.NewRequest("GET", "/", nil).WithContext(ctx)
-	w := httptest.NewRecorder()
-	rp.ServeHTTP(w, req)
+	queuedReq := httptest.NewRequest("GET", "/", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	reverseProxy.ServeHTTP(rec, queuedReq)
 
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503 for client cancellation, got %d", w.Code)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 for client cancellation, got %d", rec.Code)
 	}
 }

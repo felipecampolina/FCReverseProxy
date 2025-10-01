@@ -21,227 +21,230 @@ import (
 	proxy "traefik-challenge-2/internal/proxy"
 )
 
+// startUpstream spins up a test HTTP upstream with endpoints used by the proxy tests.
+// - /cachehit: cacheable (public, max-age=5)
+// - /nocache: non-cacheable (no-store), optionally slow to simulate load
+// - /work:    non-cacheable (no-store), used by least-connections test
+func startUpstream(t *testing.T, upstreamName string, simulateSlow bool) *httptest.Server {
+	mux := http.NewServeMux()
 
-
-func startUpstream(t *testing.T, name string, slow bool) *httptest.Server {
-	h := http.NewServeMux()
-
-	// Cacheable endpoint
-	h.HandleFunc("/cachehit", func(w http.ResponseWriter, r *http.Request) {
+	// Cacheable endpoint: responses can be stored and reused by the proxy.
+	mux.HandleFunc("/cachehit", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=5")
-		w.Header().Set("X-Upstream", name)
+		w.Header().Set("X-Upstream", upstreamName)
 		json.NewEncoder(w).Encode(map[string]any{
-			"upstream": name,
+			"upstream": upstreamName,
 			"path":     r.URL.Path,
 			"time":     time.Now().UnixNano(),
 		})
 	})
 
-	// Non-cacheable endpoint (forces miss every time)
-	h.HandleFunc("/nocache", func(w http.ResponseWriter, r *http.Request) {
-		if slow {
+	// Non-cacheable endpoint: each request is a forced cache miss.
+	mux.HandleFunc("/nocache", func(w http.ResponseWriter, r *http.Request) {
+		if simulateSlow {
 			time.Sleep(250 * time.Millisecond)
 		}
 		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("X-Upstream", name)
+		w.Header().Set("X-Upstream", upstreamName)
 		json.NewEncoder(w).Encode(map[string]any{
-			"upstream": name,
+			"upstream": upstreamName,
 			"q":        r.URL.RawQuery,
 		})
 	})
 
-	// Generic work endpoint for least-connections test (no-store)
-	h.HandleFunc("/work", func(w http.ResponseWriter, r *http.Request) {
-		if slow {
+	// Work endpoint for load-balancing tests.
+	mux.HandleFunc("/work", func(w http.ResponseWriter, r *http.Request) {
+		if simulateSlow {
 			time.Sleep(250 * time.Millisecond)
 		}
 		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("X-Upstream", name)
+		w.Header().Set("X-Upstream", upstreamName)
 		json.NewEncoder(w).Encode(map[string]any{
-			"upstream": name,
+			"upstream": upstreamName,
 			"path":     r.URL.Path,
 			"q":        r.URL.RawQuery,
 		})
 	})
 
-	return httptest.NewServer(h)
+	return httptest.NewServer(mux)
 }
 
-func mustParse(t *testing.T, raw string) *url.URL {
-	u, err := url.Parse(raw)
+// mustParse converts a string to *url.URL or fails the test on error.
+func mustParse(t *testing.T, rawURL string) *url.URL {
+	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
 		t.Fatalf("parse url: %v", err)
 	}
-	return u
+	return parsedURL
 }
 
 func TestProxyRoundRobinWithCache(t *testing.T) {
 	banner("proxy_integration_test.go")
 
-	up1 := startUpstream(t, "A", false)
-	defer up1.Close()
-	up2 := startUpstream(t, "B", false)
-	defer up2.Close()
+	upstreamA := startUpstream(t, "A", false)
+	defer upstreamA.Close()
+	upstreamB := startUpstream(t, "B", false)
+	defer upstreamB.Close()
 
-	targets := []*url.URL{mustParse(t, up1.URL), mustParse(t, up2.URL)}
+	upstreamTargets := []*url.URL{mustParse(t, upstreamA.URL), mustParse(t, upstreamB.URL)}
 
-	rp := proxy.NewReverseProxyMulti(targets, proxy.NewLRUCache(128), true)
+	reverseProxy := proxy.NewReverseProxyMulti(upstreamTargets, proxy.NewLRUCache(128), true)
 	// Disable active health checks for these test
-	rp.SetHealthCheckEnabled(false)
-	rp.ConfigureBalancer("rr")
+	reverseProxy.SetHealthCheckEnabled(false)
+	reverseProxy.ConfigureBalancer("rr")
 
-	proxySrv := httptest.NewServer(rp)
-	defer proxySrv.Close()
+	proxyServer := httptest.NewServer(reverseProxy)
+	defer proxyServer.Close()
 
-	client := &http.Client{Timeout: 3 * time.Second}
+	httpClient := &http.Client{Timeout: 3 * time.Second}
 
 	// Round-robin sequence on unique nocache requests.
-	gotSeq := []string{}
+	roundRobinSequence := []string{}
 	for i := 0; i < 4; i++ {
-		req, _ := http.NewRequest("GET", proxySrv.URL+"/nocache?i="+strconv.Itoa(i), nil)
-		resp, err := client.Do(req)
+		rrRequest, _ := http.NewRequest("GET", proxyServer.URL+"/nocache?i="+strconv.Itoa(i), nil)
+		rrResponse, err := httpClient.Do(rrRequest)
 		if err != nil {
 			t.Fatalf("request %d error: %v", i, err)
 		}
-		resp.Body.Close()
-		u := resp.Header.Get("X-Upstream")
-		if u == "" {
+		rrResponse.Body.Close()
+		upstreamHeader := rrResponse.Header.Get("X-Upstream")
+		if upstreamHeader == "" {
 			t.Fatalf("missing X-Upstream header")
 		}
-		gotSeq = append(gotSeq, u)
+		roundRobinSequence = append(roundRobinSequence, upstreamHeader)
 	}
 	// Expect A,B,A,B
-	want := []string{"A", "B", "A", "B"}
-	for i := range want {
-		if gotSeq[i] != want[i] {
-			t.Fatalf("round-robin mismatch got=%v want=%v", gotSeq, want)
+	wantSequence := []string{"A", "B", "A", "B"}
+	for i := range wantSequence {
+		if roundRobinSequence[i] != wantSequence[i] {
+			t.Fatalf("round-robin mismatch got=%v want=%v", roundRobinSequence, wantSequence)
 		}
 	}
 
-	// Cache behavior: first /cachehit MISS, second HIT, same upstream header.
-	req1, _ := http.NewRequest("GET", proxySrv.URL+"/cachehit", nil)
-	resp1, err := client.Do(req1)
+	// Cache behavior: first /cachehit MISS, second HIT, with same upstream header.
+	firstCacheReq, _ := http.NewRequest("GET", proxyServer.URL+"/cachehit", nil)
+	firstCacheResp, err := httpClient.Do(firstCacheReq)
 	if err != nil {
 		t.Fatalf("cachehit miss req error: %v", err)
 	}
-	upstreamFirst := resp1.Header.Get("X-Upstream")
-	if upstreamFirst == "" {
+	firstUpstream := firstCacheResp.Header.Get("X-Upstream")
+	if firstUpstream == "" {
 		t.Fatalf("expected upstream header on first response")
 	}
-	if xc := resp1.Header.Get("X-Cache"); xc != "MISS" && xc != "" && xc != "BYPASS" {
-		// Depending on timing ttl logic may label as MISS or BYPASS (if deemed non-cacheable)
+	if cacheHeader := firstCacheResp.Header.Get("X-Cache"); cacheHeader != "MISS" && cacheHeader != "" && cacheHeader != "BYPASS" {
+		// Depending on timing TTL logic may label as MISS or BYPASS (if deemed non-cacheable)
 	}
-	resp1.Body.Close()
+	firstCacheResp.Body.Close()
 
-	req2, _ := http.NewRequest("GET", proxySrv.URL+"/cachehit", nil)
-	resp2, err := client.Do(req2)
+	secondCacheReq, _ := http.NewRequest("GET", proxyServer.URL+"/cachehit", nil)
+	secondCacheResp, err := httpClient.Do(secondCacheReq)
 	if err != nil {
 		t.Fatalf("cachehit hit req error: %v", err)
 	}
-	defer resp2.Body.Close()
-	if resp2.Header.Get("X-Cache") != "HIT" {
-		t.Fatalf("expected X-Cache=HIT got %q", resp2.Header.Get("X-Cache"))
+	defer secondCacheResp.Body.Close()
+	if secondCacheResp.Header.Get("X-Cache") != "HIT" {
+		t.Fatalf("expected X-Cache=HIT got %q", secondCacheResp.Header.Get("X-Cache"))
 	}
-	if resp2.Header.Get("X-Upstream") != upstreamFirst {
-		t.Fatalf("cached response upstream header changed: first=%s second=%s", upstreamFirst, resp2.Header.Get("X-Upstream"))
+	if secondCacheResp.Header.Get("X-Upstream") != firstUpstream {
+		t.Fatalf("cached response upstream header changed: first=%s second=%s", firstUpstream, secondCacheResp.Header.Get("X-Upstream"))
 	}
 }
 
 func TestProxyLeastConnections(t *testing.T) {
 	banner("proxy_integration_test.go")
 
-	// upSlow first so first request goes to slow backend, second should go to fast backend.
-	upSlow := startUpstream(t, "SLOW", true)
-	defer upSlow.Close()
-	upFast := startUpstream(t, "FAST", false)
-	defer upFast.Close()
+	// Slow backend first so first request goes to SLOW; second should go to FAST.
+	slowUpstream := startUpstream(t, "SLOW", true)
+	defer slowUpstream.Close()
+	fastUpstream := startUpstream(t, "FAST", false)
+	defer fastUpstream.Close()
 
-	targets := []*url.URL{mustParse(t, upSlow.URL), mustParse(t, upFast.URL)}
+	upstreamTargets := []*url.URL{mustParse(t, slowUpstream.URL), mustParse(t, fastUpstream.URL)}
 
-	rp := proxy.NewReverseProxyMulti(targets, proxy.NewLRUCache(64), true)
+	reverseProxy := proxy.NewReverseProxyMulti(upstreamTargets, proxy.NewLRUCache(64), true)
 	// Disable active health checks for these tests; httptest upstreams lack /healthz
-	rp.SetHealthCheckEnabled(false)
-	rp.ConfigureBalancer("least_conn")
+	reverseProxy.SetHealthCheckEnabled(false)
+	reverseProxy.ConfigureBalancer("least_conn")
 
-	proxySrv := httptest.NewServer(rp)
-	defer proxySrv.Close()
+	proxyServer := httptest.NewServer(reverseProxy)
+	defer proxyServer.Close()
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	httpClient := &http.Client{Timeout: 5 * time.Second}
 
 	type result struct {
-		up string
+		upstreamHeader string
 	}
-	var wg sync.WaitGroup
-	wg.Add(2)
-	results := make([]result, 2)
+	var waitGroup sync.WaitGroup
+	waitGroup.Add(2)
+	responses := make([]result, 2)
 
-	startCh := make(chan struct{})
+	// Use a barrier so both goroutines start requests at the same time.
+	startBarrier := make(chan struct{})
 
-	for i := 0; i < 2; i++ {
-		i := i
-		go func() {
-			defer wg.Done()
-			<-startCh
-			req, _ := http.NewRequest("GET", proxySrv.URL+"/work?req="+strconv.Itoa(i), nil)
-			resp, err := client.Do(req)
+	for _, i := range []int{0, 1} {
+		go func(i int) {
+			defer waitGroup.Done()
+			<-startBarrier
+			req, _ := http.NewRequest("GET", proxyServer.URL+"/work?req="+strconv.Itoa(i), nil)
+			resp, err := httpClient.Do(req)
 			if err != nil {
 				t.Errorf("req %d error: %v", i, err)
 				return
 			}
 			resp.Body.Close()
-			results[i] = result{up: resp.Header.Get("X-Upstream")}
-		}()
+			responses[i] = result{upstreamHeader: resp.Header.Get("X-Upstream")}
+		}(i)
 	}
 
-	close(startCh) // launch both concurrently
-	wg.Wait()
+	close(startBarrier) // launch both concurrently
+	waitGroup.Wait()
 
-	if results[0].up == "" || results[1].up == "" {
-		t.Fatalf("missing upstream header(s): %+v", results)
+	if responses[0].upstreamHeader == "" || responses[1].upstreamHeader == "" {
+		t.Fatalf("missing upstream header(s): %+v", responses)
 	}
-	if results[0].up == results[1].up {
-		t.Fatalf("least-connections failed: both requests hit %s", results[0].up)
+	if responses[0].upstreamHeader == responses[1].upstreamHeader {
+		t.Fatalf("least-connections failed: both requests hit %s", responses[0].upstreamHeader)
 	}
 
-	// Third request after both done should revert to first (slow) again (both zero -> first picked).
-	req3, _ := http.NewRequest("GET", proxySrv.URL+"/work?req=3", nil)
-	resp3, err := client.Do(req3)
+	// Third request after both done should revert to SLOW (both zero -> first picked).
+	thirdReq, _ := http.NewRequest("GET", proxyServer.URL+"/work?req=3", nil)
+	thirdResp, err := httpClient.Do(thirdReq)
 	if err != nil {
 		t.Fatalf("third request error: %v", err)
 	}
-	resp3.Body.Close()
-	if resp3.Header.Get("X-Upstream") != "SLOW" {
-		t.Fatalf("expected third request to hit SLOW, got %s", resp3.Header.Get("X-Upstream"))
+	thirdResp.Body.Close()
+	if thirdResp.Header.Get("X-Upstream") != "SLOW" {
+		t.Fatalf("expected third request to hit SLOW, got %s", thirdResp.Header.Get("X-Upstream"))
 	}
 }
 
 // --- New helper to generate a self-signed cert (for mismatch test) ---
-func genCertKey(t *testing.T, cn string) (certPEM, keyPEM []byte) {
+func genCertKey(t *testing.T, commonName string) (certPEM, keyPEM []byte) {
 	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("gen key: %v", err)
 	}
-	serial, err := rand.Int(rand.Reader, big.NewInt(1<<62))
+	serialNumber, err := rand.Int(rand.Reader, big.NewInt(1<<62))
 	if err != nil {
 		t.Fatalf("serial: %v", err)
 	}
-	tmpl := &x509.Certificate{
-		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: cn},
+	certTemplate := &x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject:      pkix.Name{CommonName: commonName},
 		NotBefore:    time.Now().Add(-1 * time.Minute),
 		NotAfter:     time.Now().Add(24 * time.Hour),
 		KeyUsage:     x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		DNSNames:     []string{cn},
-		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")}, // added so requests to 127.0.0.1 validate
+		DNSNames:     []string{commonName},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")}, // allow requests to 127.0.0.1
 	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	certDER, err := x509.CreateCertificate(rand.Reader, certTemplate, certTemplate, &privateKey.PublicKey, privateKey)
 	if err != nil {
 		t.Fatalf("create cert: %v", err)
 	}
-	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)})
 	return
 }
 
@@ -249,45 +252,45 @@ func genCertKey(t *testing.T, cn string) (certPEM, keyPEM []byte) {
 func TestProxyOverHTTPS(t *testing.T) {
 	banner("proxy_integration_test.go")
 
-	up := startUpstream(t, "TLS-UP", false)
-	defer up.Close()
+	upstream := startUpstream(t, "TLS-UP", false)
+	defer upstream.Close()
 
-	targets := []*url.URL{mustParse(t, up.URL)}
-	rp := proxy.NewReverseProxyMulti(targets, proxy.NewLRUCache(32), true)
+	upstreamTargets := []*url.URL{mustParse(t, upstream.URL)}
+	reverseProxy := proxy.NewReverseProxyMulti(upstreamTargets, proxy.NewLRUCache(32), true)
 	// Disable active health checks for these tests; httptest upstreams lack /healthz
-	rp.SetHealthCheckEnabled(false)
-	rp.ConfigureBalancer("rr")
+	reverseProxy.SetHealthCheckEnabled(false)
+	reverseProxy.ConfigureBalancer("rr")
 
 	// Generate self-signed cert and key for the proxy
 	certPEM, keyPEM := genCertKey(t, "proxy.local")
 
 	// Create TLS configuration using the generated cert and key
-	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	tlsCert, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {
 		t.Fatalf("failed to load key pair: %v", err)
 	}
-	tlsConfig := &tls.Config{Certificates: []tls.Certificate{cert}}
+	tlsConfig := &tls.Config{Certificates: []tls.Certificate{tlsCert}}
 
 	// Start proxy with TLS using the custom cert
-	tlsProxy := httptest.NewUnstartedServer(rp)
-	tlsProxy.TLS = tlsConfig
-	tlsProxy.StartTLS()
-	defer tlsProxy.Close()
+	tlsProxyServer := httptest.NewUnstartedServer(reverseProxy)
+	tlsProxyServer.TLS = tlsConfig
+	tlsProxyServer.StartTLS()
+	defer tlsProxyServer.Close()
 
 	// HTTPS client trusting test server cert
-	client := tlsProxy.Client()
-	client.Timeout = 3 * time.Second
+	httpsClient := tlsProxyServer.Client()
+	httpsClient.Timeout = 3 * time.Second
 
-	req, _ := http.NewRequest("GET", tlsProxy.URL+"/nocache?x=1", nil)
-	resp, err := client.Do(req)
+	request, _ := http.NewRequest("GET", tlsProxyServer.URL+"/nocache?x=1", nil)
+	response, err := httpsClient.Do(request)
 	if err != nil {
 		t.Fatalf("https request failed: %v", err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		t.Fatalf("want 200, got %d", resp.StatusCode)
+	defer response.Body.Close()
+	if response.StatusCode != 200 {
+		t.Fatalf("want 200, got %d", response.StatusCode)
 	}
-	if resp.Header.Get("X-Upstream") == "" {
+	if response.Header.Get("X-Upstream") == "" {
 		t.Fatalf("missing X-Upstream header in HTTPS proxied response")
 	}
 }

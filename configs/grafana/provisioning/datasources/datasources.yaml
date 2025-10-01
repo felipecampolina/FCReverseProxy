@@ -1,13 +1,22 @@
-apiVersion: 1
+# Grafana automatic datasources provisioning file. Prometheus (metrics) and Loki (logs) are pre-provisioned.
+
+apiVersion: 1  # Provisioning schema version
+
+# List of datasources to provision on startup
 datasources:
-  - name: prometheus
-    type: prometheus
-    access: proxy
-    url: http://host.docker.internal:9090
-    isDefault: true
-    editable: true
-  - name: loki
-    type: loki
-    access: proxy
-    url: http://host.docker.internal:3100
-    editable: true
+  # Prometheus time-series datasource
+  - name: prometheus        # Display name in Grafana
+    type: prometheus        # Plugin/type identifier
+    access: proxy           # Grafana server proxies the requests
+    # IMPORTANT: If the Prometheus port changes in your configs, update 9090 here.
+    url: http://host.docker.internal:9090  # Prometheus base URL reachable by Grafana
+    isDefault: true         # Set as the default datasource
+    editable: true          # Allow edits via the UI
+
+  # Loki logs datasource
+  - name: loki              # Display name in Grafana
+    type: loki              # Plugin/type identifier
+    access: proxy           # Grafana server proxies the requests
+    # IMPORTANT: If the Loki port changes in your configs, update 3100 here.
+    url: http://host.docker.internal:3100  # Loki base URL reachable by Grafana
+    editable: true          # Allow edits via the UI

@@ -1,193 +1,167 @@
 package proxy
 
 import (
-	"net/http"
 	"net/url"
 	"sort"
 	"strings"
 	"sync/atomic"
-	"time"
 )
 
 type Balancer interface {
-	// Pick selects a target. If preview=true it MUST NOT alter active connection
-	// counters (used for cache key pre-selection).
-	Pick(preview bool) *url.URL
-	// Acquire marks a real upstream request start for the chosen target and returns
-	// a release func to call when done.
-	Acquire(t *url.URL) func()
+	// Pick selects an upstream target.
+	// If previewOnly is true, it MUST NOT mutate any state (e.g., active connection counters).
+	Pick(previewOnly bool) *url.URL
+	// Acquire marks the start of a real upstream request for targetURL and returns a release function.
+	// Call the returned function when the request finishes to properly decrement counters.
+	Acquire(targetURL *url.URL) func()
+	// Targets returns the current list of upstream targets.
 	Targets() []*url.URL
+	// Strategy returns the name of the balancing strategy.
 	Strategy() string
 }
 
 // ----- Round Robin -----
 
 type roundRobinBalancer struct {
-	targets            []*url.URL
-	idx                uint64
-	healthChecksEnabled bool
+	targets             []*url.URL // immutable list of upstream targets
+	nextIndex           uint64     // next index to use for round-robin (atomic)
+	healthChecksEnabled bool       // whether on-demand health probes are used
 }
 
-func NewRoundRobinBalancer(ts []*url.URL, healthChecksEnabled bool) Balancer {
-	cp := append([]*url.URL{}, ts...)
-	return &roundRobinBalancer{targets: cp, healthChecksEnabled: healthChecksEnabled}
+func NewRoundRobinBalancer(upstreamTargets []*url.URL, healthChecksEnabled bool) Balancer {
+	// Defensive copy to avoid accidental external mutations.
+	copiedTargets := append([]*url.URL{}, upstreamTargets...)
+	return &roundRobinBalancer{targets: copiedTargets, healthChecksEnabled: healthChecksEnabled}
 }
 
-func (b *roundRobinBalancer) Pick(preview bool) *url.URL {
+func (b *roundRobinBalancer) Pick(previewOnly bool) *url.URL {
 	if len(b.targets) == 0 {
 		return nil
 	}
 
-	// On preview, preserve original behavior (no health probe).
-	if preview {
-		n := atomic.LoadUint64(&b.idx)
+	// On preview, do not advance the pointer or probe health.
+	if previewOnly {
+		n := atomic.LoadUint64(&b.nextIndex)
 		return b.targets[n%uint64(len(b.targets))]
 	}
 
-	// Advance RR pointer
-	start := atomic.AddUint64(&b.idx, 1) - 1
-	l := uint64(len(b.targets))
-	// If health checks are disabled, return the next target in pure RR.
+	// Advance RR pointer once for this selection.
+	startIndex := atomic.AddUint64(&b.nextIndex, 1) - 1
+	targetCount := uint64(len(b.targets))
+
+	// If health checks are disabled, select purely by RR order.
 	if !b.healthChecksEnabled {
-		return b.targets[start%l]
+		return b.targets[startIndex%targetCount]
 	}
 
-	// Health checks enabled: scan for the first healthy target in RR order.
-	for i := uint64(0); i < l; i++ {
-		cand := b.targets[(start+i)%l]
-		if isTargetHealthy(cand) {
-			return cand
+	// Health checks enabled: return the first healthy target in RR order.
+	for i := uint64(0); i < targetCount; i++ {
+		candidateTarget := b.targets[(startIndex+i)%targetCount]
+		if isTargetHealthy(candidateTarget) {
+			return candidateTarget
 		}
 	}
 	// None are healthy.
 	return nil
 }
 
-func (b *roundRobinBalancer) Acquire(_ *url.URL) func() { return func() {} }
+func (b *roundRobinBalancer) Acquire(_ *url.URL) func() { return func() {} } 
 func (b *roundRobinBalancer) Targets() []*url.URL       { return b.targets }
 func (b *roundRobinBalancer) Strategy() string          { return "round_robin" }
 
 // ----- Least Connections -----
 
 type lcState struct {
-	u      *url.URL
-	active int64
+	upstreamURL       *url.URL // upstream target URL
+	activeConnections int64    // number of in-flight requests (atomic)
 }
 
 type leastConnectionsBalancer struct {
-	states              []*lcState
+	targetStates        []*lcState
 	healthChecksEnabled bool
 }
 
-func NewLeastConnectionsBalancer(ts []*url.URL, healthChecksEnabled bool) Balancer {
-	states := make([]*lcState, 0, len(ts))
-	for _, u := range ts {
-		states = append(states, &lcState{u: u})
+func NewLeastConnectionsBalancer(upstreamTargets []*url.URL, healthChecksEnabled bool) Balancer {
+	// Initialize state for each target.
+	targetStates := make([]*lcState, 0, len(upstreamTargets))
+	for _, u := range upstreamTargets {
+		targetStates = append(targetStates, &lcState{upstreamURL: u})
 	}
-	return &leastConnectionsBalancer{states: states, healthChecksEnabled: healthChecksEnabled}
+	return &leastConnectionsBalancer{targetStates: targetStates, healthChecksEnabled: healthChecksEnabled}
 }
 
-func (b *leastConnectionsBalancer) Pick(preview bool) *url.URL {
-	if len(b.states) == 0 {
+func (b *leastConnectionsBalancer) Pick(previewOnly bool) *url.URL {
+	if len(b.targetStates) == 0 {
 		return nil
 	}
 
 	// Build a snapshot ordered by active connections (ascending, stable).
-	type snap struct {
-		u      *url.URL
-		active int64
+	type snapshotEntry struct {
+		targetURL         *url.URL
+		activeConnections int64
 	}
-	snaps := make([]snap, 0, len(b.states))
-	for _, st := range b.states {
-		snaps = append(snaps, snap{u: st.u, active: atomic.LoadInt64(&st.active)})
+	snapshot := make([]snapshotEntry, 0, len(b.targetStates))
+	for _, st := range b.targetStates {
+		snapshot = append(snapshot, snapshotEntry{
+			targetURL:         st.upstreamURL,
+			activeConnections: atomic.LoadInt64(&st.activeConnections),
+		})
 	}
-	sort.SliceStable(snaps, func(i, j int) bool { return snaps[i].active < snaps[j].active })
+	sort.SliceStable(snapshot, func(i, j int) bool { return snapshot[i].activeConnections < snapshot[j].activeConnections })
 
 	// On preview, return best by strategy without probing.
-	if preview {
-		return snaps[0].u
+	if previewOnly {
+		return snapshot[0].targetURL
 	}
 
 	// If health checks are disabled, pick purely by LC order.
 	if !b.healthChecksEnabled {
-		return snaps[0].u
+		return snapshot[0].targetURL
 	}
 
 	// Health checks enabled: choose the first healthy according to LC order.
-	for _, s := range snaps {
-		if isTargetHealthy(s.u) {
-			return s.u
+	for _, entry := range snapshot {
+		if isTargetHealthy(entry.targetURL) {
+			return entry.targetURL
 		}
 	}
 	return nil
 }
 
-func (b *leastConnectionsBalancer) Acquire(t *url.URL) func() {
-	var target *lcState
-	for _, st := range b.states {
-		if st.u == t {
-			target = st
+func (b *leastConnectionsBalancer) Acquire(targetURL *url.URL) func() {
+	var selectedState *lcState
+	for _, st := range b.targetStates {
+		if st.upstreamURL == targetURL {
+			selectedState = st
 			break
 		}
 	}
-	if target == nil {
+	if selectedState == nil {
 		return func() {}
 	}
-	atomic.AddInt64(&target.active, 1)
+	atomic.AddInt64(&selectedState.activeConnections, 1)
 	return func() {
-		atomic.AddInt64(&target.active, -1)
+		atomic.AddInt64(&selectedState.activeConnections, -1)
 	}
 }
 
 func (b *leastConnectionsBalancer) Targets() []*url.URL {
-	out := make([]*url.URL, 0, len(b.states))
-	for _, st := range b.states {
-		out = append(out, st.u)
+	out := make([]*url.URL, 0, len(b.targetStates))
+	for _, st := range b.targetStates {
+		out = append(out, st.upstreamURL)
 	}
 	return out
 }
 func (b *leastConnectionsBalancer) Strategy() string { return "least_connections" }
 
-// ----- Factory / Configuration -----
 
-func newBalancer(strategy string, targets []*url.URL, healthChecksEnabled bool) Balancer {
+// newBalancer creates a Balancer based on the specified strategy.
+func newBalancer(strategy string, upstreamTargets []*url.URL, healthChecksEnabled bool) Balancer {
 	switch strings.ToLower(strings.TrimSpace(strategy)) {
 	case "least_conn", "lc", "least-connections", "least_connections":
-		return NewLeastConnectionsBalancer(targets, healthChecksEnabled)
+		return NewLeastConnectionsBalancer(upstreamTargets, healthChecksEnabled)
 	default:
-		return NewRoundRobinBalancer(targets, healthChecksEnabled)
+		return NewRoundRobinBalancer(upstreamTargets, healthChecksEnabled)
 	}
 }
 
-// ----- On-demand health check -----
-
-var healthHTTPClient = &http.Client{
-	Timeout: 500 * time.Millisecond,
-}
-
-func isTargetHealthy(u *url.URL) bool {
-	// Build absolute health URL at root (/healthz).
-	scheme := u.Scheme
-	if scheme == "" {
-		scheme = "http"
-	}
-	healthURL := &url.URL{
-		Scheme: scheme,
-		Host:   u.Host,
-		Path:   "/healthz",
-	}
-	req, err := http.NewRequest("GET", healthURL.String(), nil)
-	if err != nil {
-		return false
-	}
-	// Hint to avoid connection reuse issues on failing endpoints.
-	req.Close = true
-
-	resp, err := healthHTTPClient.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-	// Consider 2xx/3xx as healthy.
-	return resp.StatusCode >= 200 && resp.StatusCode < 400
-}

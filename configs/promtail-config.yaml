@@ -1,3 +1,6 @@
+# Promtail configuration file
+# Scrapes local log files and sends them to Loki.
+# Adjust paths and labels as needed.
 server:
   http_listen_port: 9080
   grpc_listen_port: 0

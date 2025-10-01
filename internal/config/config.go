@@ -12,24 +12,27 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// TLSConfig holds TLS enablement and file paths for certificate and key.
 type TLSConfig struct {
 	Enabled  bool
 	CertFile string
 	KeyFile  string
 }
 
+// Config holds all runtime settings derived from YAML and defaults.
 type Config struct {
-	ListenAddr           string     // Example: ":8080"
-	TargetURL            *url.URL   // First (primary) target for backward compatibility
-	TargetURLs           []*url.URL // All targets (>=1)
-	Cache                CacheConfig
-	Queue                proxy.QueueConfig
-	AllowedMethods       []string
-	LoadBalancerStrategy  string
+	ListenAddr              string     // Example: ":8080"
+	TargetURL               *url.URL   // First (primary) target for backward compatibility
+	TargetURLs              []*url.URL // All targets (>=1)
+	Cache                   CacheConfig
+	Queue                   proxy.QueueConfig
+	AllowedMethods          []string
+	LoadBalancerStrategy    string
 	LoadBalancerHealthCheck bool
-	TLS                  TLSConfig
+	TLS                     TLSConfig
 }
 
+// CacheConfig configures the in-memory response cache.
 type CacheConfig struct {
 	Enabled    bool
 	MaxEntries int
@@ -45,65 +48,79 @@ const (
 	defaultQueueWaitHeader     = true
 	defaultAllowedMethods      = "GET,HEAD,POST,PUT,PATCH,DELETE"
 	defaultLBHealthCheck       = true
-	defaultLBStrategy         = "rr"
+	defaultLBStrategy          = "rr"
 )
 
 // --- YAML model (pointers used so we can distinguish "omitted" vs "false/zero") ---
-
+// yamlRoot represents the top-level YAML document.
 type yamlRoot struct {
 	Proxy    *yamlProxy    `yaml:"proxy"`
 	Upstream *yamlUpstream `yaml:"upstream"`
 }
+
+// yamlProxy mirrors the "proxy" section of the YAML configuration.
 type yamlProxy struct {
-	Listen               *string     `yaml:"listen"`
-	Targets              []string    `yaml:"targets"`
-	Target               *string     `yaml:"target"`
-	LoadBalancerStrategy  *string     `yaml:"load_balancer_strategy"`
-	LoadBalancerHealthCheck *bool       `yaml:"load_balancer_health_check"`
-	AllowedMethods       []string    `yaml:"allowed_methods"`
-	Cache                *yamlCache  `yaml:"cache"`
-	Queue                *yamlQueue  `yaml:"queue"`
-	TLS                  *yamlTLS    `yaml:"tls"`
+	Listen                  *string    `yaml:"listen"`
+	Targets                 []string   `yaml:"targets"`
+	LoadBalancerStrategy    *string    `yaml:"load_balancer_strategy"`
+	LoadBalancerHealthCheck *bool      `yaml:"load_balancer_health_check"`
+	AllowedMethods          []string   `yaml:"allowed_methods"`
+	Cache                   *yamlCache `yaml:"cache"`
+	Queue                   *yamlQueue `yaml:"queue"`
+	TLS                     *yamlTLS   `yaml:"tls"`
 }
+
+// yamlCache mirrors the "proxy.cache" section.
 type yamlCache struct {
 	Enabled    *bool `yaml:"enabled"`
 	MaxEntries *int  `yaml:"max_entries"`
 }
+
+// yamlQueue mirrors the "proxy.queue" section.
 type yamlQueue struct {
 	MaxQueue        *int    `yaml:"max_queue"`
 	MaxConcurrent   *int    `yaml:"max_concurrent"`
 	EnqueueTimeout  *string `yaml:"enqueue_timeout"`
 	QueueWaitHeader *bool   `yaml:"queue_wait_header"`
 }
+
+// yamlTLS mirrors the "proxy.tls" section.
 type yamlTLS struct {
 	Enabled  *bool   `yaml:"enabled"`
 	CertFile *string `yaml:"cert_file"`
 	KeyFile  *string `yaml:"key_file"`
 }
+
+// yamlUpstream exists for backward-compatibility (unused for now).
 type yamlUpstream struct {
 	Listen any `yaml:"listen"` // accept string or list
 }
 
-// Load reads configuration from YAML 
+// Load reads configuration from YAML, applies defaults, normalizes values,
+// and returns a ready-to-use Config instance.
 func Load() (*Config, error) {
-	path, err := findConfigFile()
+	// Find the config file path.
+	configFilePath, err := findConfigFile()
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(path)
+
+	// Read the YAML configuration file from disk.
+	fileBytes, err := os.ReadFile(configFilePath)
 	if err != nil {
-		return nil, fmt.Errorf("read config file %s: %w", path, err)
+		return nil, fmt.Errorf("read config file %s: %w", configFilePath, err)
 	}
 
-	var y yamlRoot
-	if err := yaml.Unmarshal(data, &y); err != nil {
-		return nil, fmt.Errorf("parse yaml %s: %w", path, err)
+	// Unmarshal into the YAML model so we can tell "omitted" vs "explicit zero/false".
+	var yamlRootCfg yamlRoot
+	if err := yaml.Unmarshal(fileBytes, &yamlRootCfg); err != nil {
+		return nil, fmt.Errorf("parse yaml %s: %w", configFilePath, err)
 	}
-	if y.Proxy == nil {
+	if yamlRootCfg.Proxy == nil {
 		return nil, errors.New("config: proxy section is required")
 	}
 
-	// Defaults
+	// Initialize with sane defaults.
 	cfg := &Config{
 		ListenAddr: defaultListen,
 		Cache: CacheConfig{
@@ -126,125 +143,124 @@ func Load() (*Config, error) {
 		},
 	}
 
-	// Apply proxy.listen
-	if v := y.Proxy.Listen; v != nil && strings.TrimSpace(*v) != "" {
-		cfg.ListenAddr = strings.TrimSpace(*v)
+	// Apply proxy.listen if provided.
+	if listenValue := yamlRootCfg.Proxy.Listen; listenValue != nil && strings.TrimSpace(*listenValue) != "" {
+		cfg.ListenAddr = strings.TrimSpace(*listenValue)
 	}
 
-	// Apply targets/target (need at least 1)
-	var rawTargets []string
-	if len(y.Proxy.Targets) > 0 {
-		rawTargets = y.Proxy.Targets
-	} else if y.Proxy.Target != nil && strings.TrimSpace(*y.Proxy.Target) != "" {
-		rawTargets = []string{strings.TrimSpace(*y.Proxy.Target)}
+	// Collect and validate at least one target (proxy.targets only).
+	var rawTargetStrings []string
+	if len(yamlRootCfg.Proxy.Targets) > 0 {
+		rawTargetStrings = yamlRootCfg.Proxy.Targets
 	}
-	if len(rawTargets) == 0 {
-		return nil, errors.New("config: proxy.targets or proxy.target must be defined (e.g., http://localhost:9000)")
-	}
-	var parsed []*url.URL
-	for _, s := range rawTargets {
-		u, err := url.Parse(strings.TrimSpace(s))
-		if err != nil || u.Scheme == "" || u.Host == "" {
-			return nil, fmt.Errorf("config: invalid target %q", s)
-		}
-		parsed = append(parsed, u)
-	}
-	cfg.TargetURLs = parsed
-	cfg.TargetURL = parsed[0]
-
-	// Load balancer strategy
-	if y.Proxy.LoadBalancerStrategy != nil && strings.TrimSpace(*y.Proxy.LoadBalancerStrategy) != "" {
-		cfg.LoadBalancerStrategy = strings.TrimSpace(*y.Proxy.LoadBalancerStrategy)
-	}
-	// Load balancer health check (optional, default=true)
-	if y.Proxy.LoadBalancerHealthCheck != nil {
-		cfg.LoadBalancerHealthCheck = *y.Proxy.LoadBalancerHealthCheck
+	if len(rawTargetStrings) == 0 {
+		return nil, errors.New(`config: proxy.targets must be defined with at least one URL (e.g., ["http://localhost:9000"])`)
 	}
 
-	// Allowed methods (optional)
-	if len(y.Proxy.AllowedMethods) > 0 {
-		cfg.AllowedMethods = parseMethods(strings.Join(y.Proxy.AllowedMethods, ","))
+	// Parse and validate each target URL.
+	var parsedTargetURLs []*url.URL
+	for _, targetStr := range rawTargetStrings {
+		parsedURL, err := url.Parse(strings.TrimSpace(targetStr))
+		if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
+			return nil, fmt.Errorf("config: invalid target %q", targetStr)
+		}
+		parsedTargetURLs = append(parsedTargetURLs, parsedURL)
+	}
+	cfg.TargetURLs = parsedTargetURLs
+	cfg.TargetURL = parsedTargetURLs[0] // first item remains the primary target
+
+	// Load balancer strategy (optional).
+	if yamlRootCfg.Proxy.LoadBalancerStrategy != nil && strings.TrimSpace(*yamlRootCfg.Proxy.LoadBalancerStrategy) != "" {
+		cfg.LoadBalancerStrategy = strings.TrimSpace(*yamlRootCfg.Proxy.LoadBalancerStrategy)
+	}
+	// Load balancer health check (optional).
+	if yamlRootCfg.Proxy.LoadBalancerHealthCheck != nil {
+		cfg.LoadBalancerHealthCheck = *yamlRootCfg.Proxy.LoadBalancerHealthCheck
 	}
 
-	// Cache
-	if y.Proxy.Cache != nil {
-		if y.Proxy.Cache.Enabled != nil {
-			cfg.Cache.Enabled = *y.Proxy.Cache.Enabled
+	// Allowed HTTP methods (optional). Normalize to upper-case unique values.
+	if len(yamlRootCfg.Proxy.AllowedMethods) > 0 {
+		cfg.AllowedMethods = parseMethods(strings.Join(yamlRootCfg.Proxy.AllowedMethods, ","))
+	}
+
+	// Cache section (optional).
+	if yamlRootCfg.Proxy.Cache != nil {
+		if yamlRootCfg.Proxy.Cache.Enabled != nil {
+			cfg.Cache.Enabled = *yamlRootCfg.Proxy.Cache.Enabled
 		}
-		if y.Proxy.Cache.MaxEntries != nil && *y.Proxy.Cache.MaxEntries > 0 {
-			cfg.Cache.MaxEntries = *y.Proxy.Cache.MaxEntries
+		if yamlRootCfg.Proxy.Cache.MaxEntries != nil && *yamlRootCfg.Proxy.Cache.MaxEntries > 0 {
+			cfg.Cache.MaxEntries = *yamlRootCfg.Proxy.Cache.MaxEntries
 		}
 	}
 
-	// Queue
-	if y.Proxy.Queue != nil {
-		if y.Proxy.Queue.MaxQueue != nil && *y.Proxy.Queue.MaxQueue > 0 {
-			cfg.Queue.MaxQueue = *y.Proxy.Queue.MaxQueue
+	// Queue section (optional).
+	if yamlRootCfg.Proxy.Queue != nil {
+		if yamlRootCfg.Proxy.Queue.MaxQueue != nil && *yamlRootCfg.Proxy.Queue.MaxQueue > 0 {
+			cfg.Queue.MaxQueue = *yamlRootCfg.Proxy.Queue.MaxQueue
 		}
-		if y.Proxy.Queue.MaxConcurrent != nil && *y.Proxy.Queue.MaxConcurrent > 0 {
-			cfg.Queue.MaxConcurrent = *y.Proxy.Queue.MaxConcurrent
+		if yamlRootCfg.Proxy.Queue.MaxConcurrent != nil && *yamlRootCfg.Proxy.Queue.MaxConcurrent > 0 {
+			cfg.Queue.MaxConcurrent = *yamlRootCfg.Proxy.Queue.MaxConcurrent
 		}
-		if y.Proxy.Queue.EnqueueTimeout != nil && strings.TrimSpace(*y.Proxy.Queue.EnqueueTimeout) != "" {
-			if d, err := time.ParseDuration(strings.TrimSpace(*y.Proxy.Queue.EnqueueTimeout)); err == nil {
-				cfg.Queue.EnqueueTimeout = d
+		if yamlRootCfg.Proxy.Queue.EnqueueTimeout != nil && strings.TrimSpace(*yamlRootCfg.Proxy.Queue.EnqueueTimeout) != "" {
+			// Parse Go duration strings like "2s", "500ms", etc.
+			if parsedDuration, err := time.ParseDuration(strings.TrimSpace(*yamlRootCfg.Proxy.Queue.EnqueueTimeout)); err == nil {
+				cfg.Queue.EnqueueTimeout = parsedDuration
 			} else {
 				return nil, fmt.Errorf("config: invalid queue.enqueue_timeout: %v", err)
 			}
 		}
-		if y.Proxy.Queue.QueueWaitHeader != nil {
-			cfg.Queue.QueueWaitHeader = *y.Proxy.Queue.QueueWaitHeader
+		if yamlRootCfg.Proxy.Queue.QueueWaitHeader != nil {
+			cfg.Queue.QueueWaitHeader = *yamlRootCfg.Proxy.Queue.QueueWaitHeader
 		}
 	}
 
-	// TLS
-	if y.Proxy.TLS != nil {
-		if y.Proxy.TLS.Enabled != nil {
-			cfg.TLS.Enabled = *y.Proxy.TLS.Enabled
+	// TLS section (optional).
+	if yamlRootCfg.Proxy.TLS != nil {
+		if yamlRootCfg.Proxy.TLS.Enabled != nil {
+			cfg.TLS.Enabled = *yamlRootCfg.Proxy.TLS.Enabled
 		}
-		if y.Proxy.TLS.CertFile != nil {
-			cfg.TLS.CertFile = strings.TrimSpace(*y.Proxy.TLS.CertFile)
+		if yamlRootCfg.Proxy.TLS.CertFile != nil {
+			cfg.TLS.CertFile = strings.TrimSpace(*yamlRootCfg.Proxy.TLS.CertFile)
 		}
-		if y.Proxy.TLS.KeyFile != nil {
-			cfg.TLS.KeyFile = strings.TrimSpace(*y.Proxy.TLS.KeyFile)
+		if yamlRootCfg.Proxy.TLS.KeyFile != nil {
+			cfg.TLS.KeyFile = strings.TrimSpace(*yamlRootCfg.Proxy.TLS.KeyFile)
 		}
 	}
 
 	return cfg, nil
 }
+
+// findConfigFile locates a config file path by:
 func findConfigFile() (string, error) {
-	// Allow overriding via CONFIG_FILE for tests or custom deployments.
-	if v := strings.TrimSpace(os.Getenv("CONFIG_FILE")); v != "" {
-		return v, nil
+	defaultPath := "configs/config.yaml"
+	if _, statErr := os.Stat(defaultPath); statErr == nil {
+		return defaultPath, nil
 	}
-	// Try configs/config.yaml then configs/config.yml in the root directory.
-	candidates := []string{"configs/config.yaml", "configs/config.yml"}
-	for _, c := range candidates {
-		if _, err := os.Stat(c); err == nil {
-			return c, nil
-		}
-	}
-	return "", errors.New("config file not found (create configs/config.yaml or set CONFIG_FILE)")
+	return "", errors.New("config file not found (create configs/config.yaml)")
 }
 
-
-// parseMethods converts comma-separated methods to upper-case slice.
-func parseMethods(s string) []string {
-	if s == "" {
+// parseMethods converts a comma-separated string of HTTP methods into a slice
+// of unique, upper-case method names, preserving only non-empty entries.
+func parseMethods(methodsCSV string) []string {
+	if methodsCSV == "" {
 		return nil
 	}
-	parts := strings.Split(s, ",")
-	out := make([]string, 0, len(parts))
-	seen := make(map[string]struct{}, len(parts))
-	for _, p := range parts {
-		m := strings.ToUpper(strings.TrimSpace(p))
-		if m == "" {
+
+	rawMethods := strings.Split(methodsCSV, ",")
+	normalizedMethods := make([]string, 0, len(rawMethods))
+	uniqueMethods := make(map[string]struct{}, len(rawMethods))
+
+	for _, rawMethod := range rawMethods {
+		method := strings.ToUpper(strings.TrimSpace(rawMethod))
+		if method == "" {
 			continue
 		}
-		if _, ok := seen[m]; ok {
+		if _, exists := uniqueMethods[method]; exists {
 			continue
 		}
-		seen[m] = struct{}{}
-		out = append(out, m)
+		uniqueMethods[method] = struct{}{}
+		normalizedMethods = append(normalizedMethods, method)
 	}
-	return out
+
+	return normalizedMethods
 }

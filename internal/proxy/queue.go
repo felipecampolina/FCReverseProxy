@@ -11,6 +11,11 @@ import (
 	imetrics "traefik-challenge-2/internal/metrics"
 )
 
+// QueueConfig controls the admission queue and concurrency limiter.
+// - MaxQueue: maximum number of requests allowed to wait in the queue.
+// - MaxConcurrent: maximum number of requests processed concurrently.
+// - EnqueueTimeout: maximum time a request is allowed to wait before being rejected.
+// - QueueWaitHeader: if true, emits headers with queue/concurrency metadata.
 type QueueConfig struct {
 	MaxQueue        int
 	MaxConcurrent   int
@@ -18,6 +23,11 @@ type QueueConfig struct {
 	QueueWaitHeader bool
 }
 
+// WithQueue wraps an http.Handler with a bounded waiting queue and a bounded
+// concurrency limiter. Requests first try to enter the queue (bounded by MaxQueue).
+// Once queued, they race to acquire an "active slot" (bounded by MaxConcurrent).
+// While waiting, they can be canceled by the client or rejected after EnqueueTimeout.
+// Metrics are emitted for queue depth, rejections, timeouts, and wait durations.
 func WithQueue(next http.Handler, cfg QueueConfig) http.Handler {
 	if cfg.MaxQueue <= 0 {
 		cfg.MaxQueue = 1024
@@ -29,103 +39,112 @@ func WithQueue(next http.Handler, cfg QueueConfig) http.Handler {
 		cfg.EnqueueTimeout = 2 * time.Second
 	}
 
-	waiters := make(chan struct{}, cfg.MaxQueue)      // queued-only
-	active := make(chan struct{}, cfg.MaxConcurrent)  // running
+	// queueWaitCh tracks queued requests (waiting only).
+	queueWaitCh := make(chan struct{}, cfg.MaxQueue)
 
-	var depth int64 // queued depth only
+	// activeSlotsCh tracks currently executing requests.
+	activeSlotsCh := make(chan struct{}, cfg.MaxConcurrent)
+
+	// queueDepth holds the current number of queued (not active) requests.
+	var queueDepth int64
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
+		enqueueStart := time.Now()
 
-		// Try to enter the queue (queued-only). If full -> 429.
+		// Try to enter the queue; if queue is full, reject immediately (429).
 		select {
-		case waiters <- struct{}{}:
-			// ok
+		case queueWaitCh <- struct{}{}:
+			// Admitted into the queue.
 		default:
 			imetrics.QueueRejectedInc()
 			http.Error(w, "queue full, try again later", http.StatusTooManyRequests)
 			return
 		}
 
-		queued := true
-		newDepth := atomic.AddInt64(&depth, 1)
-		imetrics.QueueDepthSet(newDepth)
+		isStillQueued := true
+		depthAfterEnqueue := atomic.AddInt64(&queueDepth, 1)
+		imetrics.QueueDepthSet(depthAfterEnqueue)
+
+		// Ensure queue bookkeeping is reverted if we exit before becoming active.
 		defer func() {
-			if queued {
-				<-waiters
-				atomic.AddInt64(&depth, -1)
-				imetrics.QueueDepthSet(atomic.LoadInt64(&depth))
+			if isStillQueued {
+				<-queueWaitCh
+				atomic.AddInt64(&queueDepth, -1)
+				imetrics.QueueDepthSet(atomic.LoadInt64(&queueDepth))
 			}
 		}()
 
-		// Race slot acquisition against timeout/cancel with deterministic priority.
-		// We use a goroutine that *only* tries to acquire the active slot and is cancelable.
-		ctx := r.Context()
-		queueCtx, cancelAcquire := context.WithCancel(ctx)
+		// We race "acquire active slot" against timeout/client-cancel.
+		// Use a cancelable context dedicated to acquisition to avoid leaking the goroutine.
+		reqCtx := r.Context()
+		acquireCtx, cancelAcquire := context.WithCancel(reqCtx)
 		defer cancelAcquire()
 
-		slotCh := make(chan struct{}, 1)
+		activeGrantedCh := make(chan struct{}, 1)
 		go func() {
-			// Try to acquire active unless canceled.
+			// Only acquire if not canceled by timeout or client.
 			select {
-			case active <- struct{}{}:
-				slotCh <- struct{}{}
-			case <-queueCtx.Done():
-				// canceled (timeout or client cancel) — do not acquire
+			case activeSlotsCh <- struct{}{}:
+				activeGrantedCh <- struct{}{}
+			case <-acquireCtx.Done():
+				// Canceled before acquiring an active slot.
 			}
 		}()
 
-		timer := time.NewTimer(cfg.EnqueueTimeout)
-		defer timer.Stop()
+		enqueueTimer := time.NewTimer(cfg.EnqueueTimeout)
+		defer enqueueTimer.Stop()
 
+		// Deterministic selection: whichever happens first wins.
 		select {
-		case <-ctx.Done():
-			// Client canceled while queued
-			cancelAcquire() // ensure acquire goroutine stops
-			imetrics.QueueWaitObserve(time.Since(start))
-			failQueue(w, ctx.Err())
+		case <-reqCtx.Done():
+			// Client canceled while waiting in the queue.
+			cancelAcquire()
+			imetrics.QueueWaitObserve(time.Since(enqueueStart))
+			failQueue(w, reqCtx.Err())
 			return
 
-		case <-timer.C:
-			// Timed out while queued
-			cancelAcquire() // ensure acquire goroutine stops
+		case <-enqueueTimer.C:
+			// Timed out while waiting in the queue.
+			cancelAcquire()
 			imetrics.QueueTimeoutsInc()
-			imetrics.QueueWaitObserve(time.Since(start))
+			imetrics.QueueWaitObserve(time.Since(enqueueStart))
 			failQueue(w, context.DeadlineExceeded)
 			return
 
-		case <-slotCh:
-			// We got an active slot *before* timeout/cancel.
+		case <-activeGrantedCh:
+			// Successfully acquired an active (concurrency) slot.
 		}
 
-		// Leave the queue now that we're active.
-		<-waiters
-		atomic.AddInt64(&depth, -1)
-		imetrics.QueueDepthSet(atomic.LoadInt64(&depth))
-		queued = false
+		// Transition from queued -> active.
+		<-queueWaitCh
+		atomic.AddInt64(&queueDepth, -1)
+		imetrics.QueueDepthSet(atomic.LoadInt64(&queueDepth))
+		isStillQueued = false
 
-		// Release active when done serving.
-		defer func() { <-active }()
+		// Release active slot once request is served.
+		defer func() { <-activeSlotsCh }()
 
+		// Optional observability headers.
 		if cfg.QueueWaitHeader {
 			w.Header().Set("X-Concurrency-Limit", strconv.Itoa(cfg.MaxConcurrent))
 			w.Header().Set("X-Queue-Limit", strconv.Itoa(cfg.MaxQueue))
-			w.Header().Set("X-Queue-Depth", strconv.FormatInt(newDepth, 10))
-			w.Header().Set("X-Queue-Wait", time.Since(start).String())
+			w.Header().Set("X-Queue-Depth", strconv.FormatInt(depthAfterEnqueue, 10))
+			w.Header().Set("X-Queue-Wait", time.Since(enqueueStart).String())
 		}
 
-		// Record queue wait for successful admission
-		imetrics.QueueWaitObserve(time.Since(start))
+		// Record queue wait for successfully admitted requests.
+		imetrics.QueueWaitObserve(time.Since(enqueueStart))
 
 		next.ServeHTTP(w, r)
 	})
 }
 
+// failQueue maps queue wait errors to an HTTP response.
 func failQueue(w http.ResponseWriter, err error) {
-	status := http.StatusServiceUnavailable
-	msg := "request cancelled while waiting in queue"
+	httpStatus := http.StatusServiceUnavailable
+	errorMsg := "request cancelled while waiting in queue"
 	if errors.Is(err, context.DeadlineExceeded) {
-		msg = "timed out while waiting in queue"
+		errorMsg = "timed out while waiting in queue"
 	}
-	http.Error(w, msg, status)
+	http.Error(w, errorMsg, httpStatus)
 }

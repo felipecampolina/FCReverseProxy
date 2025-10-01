@@ -11,24 +11,29 @@ import (
 )
 
 var (
-	_testFileBannerMu     sync.Mutex
-	_testFileBannerPrinted = map[string]struct{}{}
+	// Mutex and map to ensure the banner for this test file is printed once and test logs aren't interleaved.
+	bannerMu       sync.Mutex
+	printedBanners = map[string]struct{}{}
 )
+
 func init() {
 	// Ensure test output is not interleaved
 	banner("balancer_test.go")
 }
+
+// banner prints a one-time banner per file to help visually separate test logs.
 func banner(file string) {
-	_testFileBannerMu.Lock()
-	if _, ok := _testFileBannerPrinted[file]; ok {
-		_testFileBannerMu.Unlock()
+	bannerMu.Lock()
+	if _, ok := printedBanners[file]; ok {
+		bannerMu.Unlock()
 		return
 	}
-	_testFileBannerPrinted[file] = struct{}{}
-	_testFileBannerMu.Unlock()
+	printedBanners[file] = struct{}{}
+	bannerMu.Unlock()
 	fmt.Printf("\n===== BEGIN TEST FILE: internal/proxy/%s =====\n", file)
 }
 
+// mustURL parses a URL or fails the test immediately for brevity in test setup.
 func mustURL(t *testing.T, raw string) *url.URL {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -44,18 +49,19 @@ func TestRoundRobinBalancer(t *testing.T) {
 		mustURL(t, "http://three"),
 	}
 	// Disable health checks in tests
-	b := proxy.NewRoundRobinBalancer(targets, false)
+	rrBalancer := proxy.NewRoundRobinBalancer(targets, false)
 
-	seq := []string{}
+	// Collect selected host order to validate round-robin behavior.
+	selectedHosts := []string{}
 	for i := 0; i < 6; i++ {
-		u := b.Pick(false)
-		b.Acquire(u)() // no-op
-		seq = append(seq, u.Host)
+		pickedTarget := rrBalancer.Pick(false)
+		rrBalancer.Acquire(pickedTarget)() // no-op
+		selectedHosts = append(selectedHosts, pickedTarget.Host)
 	}
-	want := []string{"one", "two", "three", "one", "two", "three"}
-	for i := range want {
-		if seq[i] != want[i] {
-			t.Fatalf("rr order mismatch got=%v want=%v", seq, want)
+	expectedHosts := []string{"one", "two", "three", "one", "two", "three"}
+	for i := range expectedHosts {
+		if selectedHosts[i] != expectedHosts[i] {
+			t.Fatalf("rr order mismatch got=%v want=%v", selectedHosts, expectedHosts)
 		}
 	}
 }
@@ -67,45 +73,46 @@ func TestLeastConnectionsBalancerBasic(t *testing.T) {
 		mustURL(t, "http://b"),
 		mustURL(t, "http://c"),
 	}
-	// Disable health checks in tests 
-	b := proxy.NewLeastConnectionsBalancer(targets, false)
+	// Disable health checks in tests
+	lcBalancer := proxy.NewLeastConnectionsBalancer(targets, false)
 
 	// First pick: all zero -> picks 'a'
-	a := b.Pick(false)
-	if a.Host != "a" {
-		t.Fatalf("expected a first, got %s", a.Host)
+	firstTarget := lcBalancer.Pick(false)
+	if firstTarget.Host != "a" {
+		t.Fatalf("expected a first, got %s", firstTarget.Host)
 	}
-	releaseA1 := b.Acquire(a)
+	releaseFirst := lcBalancer.Acquire(firstTarget)
 
 	// Second pick: a=1 b=0 c=0 -> should pick b
-	bu := b.Pick(false)
-	if bu.Host != "b" {
-		t.Fatalf("expected b second, got %s", bu.Host)
+	secondTarget := lcBalancer.Pick(false)
+	if secondTarget.Host != "b" {
+		t.Fatalf("expected b second, got %s", secondTarget.Host)
 	}
-	releaseB1 := b.Acquire(bu)
+	releaseSecond := lcBalancer.Acquire(secondTarget)
 
 	// Third pick: a=1 b=1 c=0 -> should pick c
-	c := b.Pick(false)
-	if c.Host != "c" {
-		t.Fatalf("expected c third, got %s", c.Host)
+	thirdTarget := lcBalancer.Pick(false)
+	if thirdTarget.Host != "c" {
+		t.Fatalf("expected c third, got %s", thirdTarget.Host)
 	}
-	releaseC1 := b.Acquire(c)
+	releaseThird := lcBalancer.Acquire(thirdTarget)
 
 	// Release b so counts: a=1 b=0 c=1 -> next should pick b
-	releaseB1()
-	next := b.Pick(false)
-	if next.Host != "b" {
-		t.Fatalf("expected b after release, got %s", next.Host)
+	releaseSecond()
+	nextPick := lcBalancer.Pick(false)
+	if nextPick.Host != "b" {
+		t.Fatalf("expected b after release, got %s", nextPick.Host)
 	}
 
 	// Cleanup remaining
-	releaseA1()
-	releaseC1()
+	releaseFirst()
+	releaseThird()
 }
 
 func TestRoundRobinBalancerHealthChecks(t *testing.T) {
 	banner("balancer_test.go")
 
+	// Health endpoint responds 200 for healthy and 503 for unhealthy.
 	healthyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" {
 			w.WriteHeader(http.StatusOK)
@@ -121,39 +128,45 @@ func TestRoundRobinBalancerHealthChecks(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	upUnhealthy := httptest.NewServer(unhealthyHandler)
-	defer upUnhealthy.Close()
-	upHealthy1 := httptest.NewServer(healthyHandler)
-	defer upHealthy1.Close()
-	upHealthy2 := httptest.NewServer(healthyHandler)
-	defer upHealthy2.Close()
+	serverUnhealthy := httptest.NewServer(unhealthyHandler)
+	defer serverUnhealthy.Close()
+	serverHealthy1 := httptest.NewServer(healthyHandler)
+	defer serverHealthy1.Close()
+	serverHealthy2 := httptest.NewServer(healthyHandler)
+	defer serverHealthy2.Close()
 
 	targets := []*url.URL{
-		mustURL(t, upUnhealthy.URL),
-		mustURL(t, upHealthy1.URL),
-		mustURL(t, upHealthy2.URL),
+		mustURL(t, serverUnhealthy.URL),
+		mustURL(t, serverHealthy1.URL),
+		mustURL(t, serverHealthy2.URL),
 	}
-	b := proxy.NewRoundRobinBalancer(targets, true)
+	rrHealthBalancer := proxy.NewRoundRobinBalancer(targets, true)
 
-	seenHealthy1 := false
-	seenHealthy2 := false
+	// Track that both healthy backends are actually chosen.
+	unhealthyHost := mustURL(t, serverUnhealthy.URL).Host
+	healthyHost1 := mustURL(t, serverHealthy1.URL).Host
+	healthyHost2 := mustURL(t, serverHealthy2.URL).Host
+
+	observedHealthy1 := false
+	observedHealthy2 := false
 	for i := 0; i < 6; i++ {
-		u := b.Pick(false)
-		if u == nil {
+		pickedTarget := rrHealthBalancer.Pick(false)
+		if pickedTarget == nil {
 			t.Fatalf("expected a healthy target, got nil")
 		}
-		b.Acquire(u)() // no-op
-		switch u.Host {
-		case mustURL(t, upUnhealthy.URL).Host:
-			t.Fatalf("picked unhealthy target %s", u.Host)
-		case mustURL(t, upHealthy1.URL).Host:
-			seenHealthy1 = true
-		case mustURL(t, upHealthy2.URL).Host:
-			seenHealthy2 = true
+		rrHealthBalancer.Acquire(pickedTarget)() // no-op
+
+		switch pickedTarget.Host {
+		case unhealthyHost:
+			t.Fatalf("picked unhealthy target %s", pickedTarget.Host)
+		case healthyHost1:
+			observedHealthy1 = true
+		case healthyHost2:
+			observedHealthy2 = true
 		}
 	}
-	if !seenHealthy1 || !seenHealthy2 {
-		t.Fatalf("expected both healthy targets to be selected at least once; seenHealthy1=%v seenHealthy2=%v", seenHealthy1, seenHealthy2)
+	if !observedHealthy1 || !observedHealthy2 {
+		t.Fatalf("expected both healthy targets to be selected at least once; observedHealthy1=%v observedHealthy2=%v", observedHealthy1, observedHealthy2)
 	}
 }
 
@@ -168,19 +181,20 @@ func TestRoundRobinBalancerHealthAllUnhealthy(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	upBad1 := httptest.NewServer(unhealthyHandler)
-	defer upBad1.Close()
-	upBad2 := httptest.NewServer(unhealthyHandler)
-	defer upBad2.Close()
+	serverUnhealthy1 := httptest.NewServer(unhealthyHandler)
+	defer serverUnhealthy1.Close()
+	serverUnhealthy2 := httptest.NewServer(unhealthyHandler)
+	defer serverUnhealthy2.Close()
 
 	targets := []*url.URL{
-		mustURL(t, upBad1.URL),
-		mustURL(t, upBad2.URL),
+		mustURL(t, serverUnhealthy1.URL),
+		mustURL(t, serverUnhealthy2.URL),
 	}
-	b := proxy.NewRoundRobinBalancer(targets, true)
+	rrHealthBalancer := proxy.NewRoundRobinBalancer(targets, true)
 
-	u := b.Pick(false)
-	if u != nil {
-		t.Fatalf("expected nil when all targets unhealthy, got %v", u)
+	// With all backends unhealthy, Pick should return nil.
+	pickedTarget := rrHealthBalancer.Pick(false)
+	if pickedTarget != nil {
+		t.Fatalf("expected nil when all targets unhealthy, got %v", pickedTarget)
 	}
 }

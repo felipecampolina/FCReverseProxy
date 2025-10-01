@@ -1,74 +1,94 @@
 # ==============================================================================
-# Global configuration for the reverse proxy and demo upstream service.
+# Reverse proxy configuration.
 #
-# Notes:
-# - Durations use Go's duration format, e.g. "2s", "500ms", "1m".
-# - Balancer strategies:
-#     - rr            : Round-robin (default)
-#     - least_conn    : Least connections
-# - allowed_methods: list of HTTP methods. Empty or omitted means "allow all".
+# Conventions
+# - Durations use Go's time format, e.g. "2s", "500ms", "1m", "1h".
+# - All ports shown are host-local ports unless otherwise noted.
+# - Unless specified, omitted fields use built-in defaults of the application.
+#
+# Load balancer strategies
+# - rr         : Round-robin (default)
+# - lc         : Least-connections
+#
+# HTTP method filtering
+# - allowed_methods: list of HTTP methods to accept. If empty or omitted, all methods are allowed.
+# - Methods are matched case-insensitively.
 # ==============================================================================
 
 proxy:
-  # Address the proxy listens on
+  # Network address the proxy listens on (host:port)
+  # Example: ":8090"
   listen: ":8090"
 
-  # Upstream targets
-  # Prefer the 'targets' list. If only a single upstream is used, 'target' may be used instead.
-  # targets: ["http://localhost:9000", "http://localhost:9001"]
-  # target: "http://localhost:9000"
-  targets: ["http://localhost:9000", "http://localhost:9001", "http://localhost:9002"]
+  # Upstream targets the proxy can forward requests to.
+  # Prefer 'targets' (list). If a single upstream is used, a 'target' scalar may be supported by the app.
+  # Targets must be absolute URLs with scheme (http) and host:port.
+  # Example: ["http://localhost:9000", "http://localhost:9001"]
+  targets: ["http://localhost:9000", "http://localhost:9001", "http://localhost:9002", "http://localhost:9003", "http://localhost:9004"]
 
-  # Load balancer strategy : rr | lc
+  # Load balancer selection strategy: rr (round-robin) | lc (least-connections).
+  # If unset, defaults to rr.
   load_balancer_strategy: rr
-  # Whether the load balancer should actively probe /healthz before selecting a target.
-  # If false, selection ignores health and follows pure RR/LC order.
-  load_balancer_health_check: false
 
-  # Limit the HTTP methods accepted by the proxy
-  # If omitted or empty, all methods are allowed.
+  # Whether the load balancer probes /healthz on each target and only selects healthy ones.
+  # If false, selection strictly follows the chosen strategy order and ignores health.
+  # The upstream is expected to expose GET /healthz returning 200 when healthy.
+  load_balancer_health_check: true
+
+  # Restrict which HTTP methods the proxy accepts. If omitted/empty -> allow all.
+  # Typical values: [GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS]
   allowed_methods: [GET, HEAD, POST, PUT, PATCH, DELETE]
 
-  # Response cache settings (was CACHE_ENABLED, CACHE_MAX_ENTRIES)
+  # Response cache configuration. Controls in-memory caching of successful responses.
+  # - enabled: toggles caching
+  # - max_entries: upper bound on cache size (number of unique responses/keys)
   cache:
     enabled: true
     max_entries: 2048
 
-  # Queue/concurrency control
+  # Request queue and concurrency controls to apply backpressure under load.
+  # - max_concurrent: upper bound on in-flight requests to upstreams.
+  # - max_queue: maximum number of requests allowed to wait (beyond in-flight).
+  # - enqueue_timeout: how long a queued request may wait before receiving 503.
+  # - queue_wait_header: whether to include X-Queue-* headers with observed wait time.
   queue:
-    # Maximum number of requests allowed to wait in the queue.
+    # Maximum number of requests allowed to wait when max_concurrent is reached.
     max_queue: 1000
-    # Maximum number of requests processed concurrently.
+    # Maximum number of requests processed concurrently (across all targets).
     max_concurrent: 100
-    # How long a request may wait in the queue before timing out (503).
+    # Maximum time a request may spend waiting in the queue before timing out with 503.
     enqueue_timeout: "2s"
-    # Whether to add X-Queue-* headers on admitted requests.
+    # If true, add headers like X-Queue-Wait to admitted requests for observability.
     queue_wait_header: true
 
-  # TLS termination 
-  # If enabled=true and cert/key are not present, the proxy will auto-generate a self-signed cert for localhost.
+  # TLS termination for the proxy listener.
+  # - enabled: when true, the proxy serves HTTPS on 'listen'.
+  # - cert_file/key_file: PEM-encoded certificate and key file paths (relative to working dir or absolute).
+  # - If enabled=true and files are missing, a self-signed cert for localhost is auto-generated.
+  #   Use only for local development/testing.
   tls:
     enabled: true
     cert_file: "server.crt"
     key_file: "server.key"
 
-# Demo upstream app configuration 
-# This helps keep upstream's port aligned with the proxy defaults in examples/tests.
-# Example for mutliple listen addresses:
-# listen: "[:9000", ":9001", ":9002]"
-upstream:
- listen: [":9000", ":9001", ":9002"]
-
-# Metrics stack (used by `make run-metrics`)
+  
+# Metrics/observability stack configuration (used by `make run-metrics`).
+# Values are host ports that map to container ports in the dev stack.
 metrics:
-  # Host ports used for container port mapping
+  # Prometheus UI/listen port on host.
   prometheus_port: 9090
+  # Grafana UI/listen port on host.
   grafana_port: 3000
+  # Loki UI/listen port on host.
   loki_port: 3100
+  # Base URL for Loki ingestion/queries from local tools.
   loki_url: "http://localhost:3100"
 
 logging:
-  # Enable/disable local and Loki emission for each level
+  # Toggle emission for each log level to both local output and Loki (if configured).
+  # - info_enabled : general operational information
+  # - debug_enabled: verbose diagnostics (enable only when needed)
+  # - error_enabled: errors and critical failures
   info_enabled: true
   debug_enabled: true
   error_enabled: true

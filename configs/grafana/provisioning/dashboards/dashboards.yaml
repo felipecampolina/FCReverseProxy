@@ -1,13 +1,18 @@
+# Grafana automatic dashboards provisioning configuration
+
+# Schema version for provisioning files
 apiVersion: 1
 
+# List of dashboard providers
 providers:
-  - name: 'Local Dashboards'
-    orgId: 1
-    folder: ''
-    type: file
-    disableDeletion: false
-    editable: true
-    allowUiUpdates: false
+  # Each provider defines where dashboards are loaded from
+  - name: 'Local Dashboards'          # Display name for this provider
+    orgId: 1                          # Target Grafana organization ID
+    folder: ''                        # Destination folder in Grafana ('' = General)
+    type: file                        # Source type; 'file' loads from filesystem
+    disableDeletion: false            # Prevent deletion of provisioned dashboards if true
+    editable: true                    # Allow editing dashboards in the UI
+    allowUiUpdates: false             # Persist UI edits back to disk if true (keep false for Git-managed)
     options:
-      path: /var/lib/grafana/dashboards
-      recursive: true
+      path: /var/lib/grafana/dashboards  # Filesystem path containing dashboards
+      recursive: true                    # Include dashboards in subdirectories

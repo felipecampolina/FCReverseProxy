@@ -1,0 +1,11 @@
+# ==============================================================================
+# Global configuration for Demo upstream app configuration 
+# 
+# Notes:
+# This helps keep upstream's port aligned with the proxy defaults in examples/tests.
+# Example for mutliple listen addresses:
+# listen: "[:9000", ":9001", ":9002]"
+# ==============================================================================
+
+upstream:
+ listen: [":9000", ":9001", ":9002", ":9003", ":9004"]

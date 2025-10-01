@@ -14,57 +14,64 @@ import (
 func TestHighVolume(t *testing.T) {
 	banner("load_test.go")
 
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Upstream test server simulating processing latency.
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(50 * time.Millisecond)
 		w.WriteHeader(200)
 	}))
-	t.Cleanup(up.Close)
+	t.Cleanup(upstreamServer.Close)
 
-	tgt, _ := url.Parse(up.URL)
-	rp := proxy.NewReverseProxy(tgt, proxy.NewLRUCache(0), false).WithQueue(proxy.QueueConfig{
+	// Reverse proxy configured with queueing and concurrency limits.
+	targetURL, _ := url.Parse(upstreamServer.URL)
+	reverseProxy := proxy.NewReverseProxy(targetURL, proxy.NewLRUCache(0), false).WithQueue(proxy.QueueConfig{
+		// Allow up to 20 queued requests and 5 concurrent in-flight requests.
 		MaxQueue:       20,
 		MaxConcurrent:  5,
+		// Fail fast if enqueue takes longer than 1s.
 		EnqueueTimeout: time.Second,
 	})
-	// Disable health checks in unit test
-	rp.SetHealthCheckEnabled(false)
+	// Disable health checks to avoid test flakiness.
+	reverseProxy.SetHealthCheckEnabled(false)
 
-	const N = 200
-	var wg sync.WaitGroup
-	codes := make(chan int, N)
+	// Send a burst of requests to exercise the queue and backpressure behavior.
+	const totalRequests = 200
+	var requestWG sync.WaitGroup
+	responseCodes := make(chan int, totalRequests)
 
-	for i := 0; i < N; i++ {
-		wg.Add(1)
+	for i := 0; i < totalRequests; i++ {
+		requestWG.Add(1)
 		go func() {
-			defer wg.Done()
+			defer requestWG.Done()
 			w := httptest.NewRecorder()
-			rp.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
-			codes <- w.Code
+			reverseProxy.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+			responseCodes <- w.Code
 		}()
 	}
-	wg.Wait()
-	close(codes)
+	requestWG.Wait()
+	close(responseCodes)
 
-	var ok, rejected, other int
-	for c := range codes {
-		switch c {
+	// Tally results by HTTP status code.
+	var successCount, rejectedCount, otherCount int
+	for code := range responseCodes {
+		switch code {
 		case http.StatusOK:
-			ok++
+			successCount++
 		case http.StatusTooManyRequests:
-			rejected++
+			rejectedCount++
 		default:
-			other++
+			otherCount++
 		}
 	}
 
-	if other != 0 {
-		t.Fatalf("unexpected statuses seen: %d", other)
+	// Validate only expected statuses and ensure some success.
+	if otherCount != 0 {
+		t.Fatalf("unexpected statuses seen: %d", otherCount)
 	}
-	if ok == 0 {
+	if successCount == 0 {
 		t.Fatalf("no successful responses; expected some to pass through")
 	}
 
-	if ok == 0 {
+	if successCount == 0 {
 		t.Fatalf("no successful responses; expected some to pass through")
 	}
 }

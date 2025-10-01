@@ -63,7 +63,7 @@ build:
 
 
 test:
-	go test ./test -v
+	go test -count=1 ./test/unit -v
 
 clean:
 	rm -rf bin/

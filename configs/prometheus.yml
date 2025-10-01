@@ -1,3 +1,7 @@
+# Prometheus configuration file
+# Scrape metrics from the reverse proxy and upstream service.
+# Adjust targets and ports as needed.
+# Note: Prometheus uses Go duration format for intervals (e.g., "5s" for 5 seconds).
 global:
   scrape_interval: 5s
 
