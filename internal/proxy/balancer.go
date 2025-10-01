@@ -165,3 +165,15 @@ func newBalancer(strategy string, upstreamTargets []*url.URL, healthChecksEnable
 	}
 }
 
+// ConfigureBalancer switches balancing strategy at runtime.
+func (proxy *ReverseProxy) ConfigureBalancer(strategy string) {
+	proxy.lbStrategy = strategy
+	proxy.balancer = newBalancer(proxy.lbStrategy, proxy.targets, proxy.healthChecksEnabled)
+}
+
+// Toggle active health checks in the load balancer at runtime.
+func (proxy *ReverseProxy) SetHealthCheckEnabled(enabled bool) {
+	proxy.healthChecksEnabled = enabled
+	proxy.balancer = newBalancer(proxy.lbStrategy, proxy.targets, proxy.healthChecksEnabled)
+}
+

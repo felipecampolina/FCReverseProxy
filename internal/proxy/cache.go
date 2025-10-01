@@ -54,6 +54,12 @@ type lruEntry struct {
 	val *CachedResponse
 }
 
+// context key for cached request key
+type cacheKeyCtxKey struct{}
+type upstreamTargetCtxKey struct{}
+// add context key for request start time (end-to-end measurement)
+type startTimeCtxKey struct{}
+
 // NewLRUCache creates a new LRU cache with a maximum number of entries.
 // If maxEntries <= 0, it defaults to 1024.
 func NewLRUCache(maxEntries int) Cache {
@@ -299,3 +305,17 @@ func buildCacheKey(req *http.Request) string {
 	return keyBuilder.String()
 }
 
+// Checks if the client explicitly requested no-cache.
+func clientNoCache(req *http.Request) bool {
+	directives := parseCacheControl(req.Header.Get("Cache-Control"))
+	if _, ok := directives["no-cache"]; ok {
+		return true
+	}
+	if _, ok := directives["no-store"]; ok {
+		return true
+	}
+	if strings.EqualFold(req.Header.Get("Pragma"), "no-cache") {
+		return true
+	}
+	return false
+}

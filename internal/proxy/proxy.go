@@ -10,10 +10,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"sort"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	applog "traefik-challenge-2/internal/log"
@@ -85,32 +83,6 @@ func NewReverseProxyMulti(targets []*url.URL, cache Cache, cacheOn bool) *Revers
 func (proxy *ReverseProxy) WithQueue(cfg QueueConfig) *ReverseProxy {
 	proxy.handler = WithQueue(http.HandlerFunc(proxy.serveUpstream), cfg)
 	return proxy
-}
-
-// SetAllowedMethods configures which HTTP methods are permitted (empty slice => allow all).
-func (proxy *ReverseProxy) SetAllowedMethods(methods []string) {
-	if len(methods) == 0 {
-		proxy.allowedMethods = nil
-		return
-	}
-	allowed := make(map[string]struct{}, len(methods))
-	for _, method := range methods {
-		allowed[strings.ToUpper(strings.TrimSpace(method))] = struct{}{}
-	}
-	proxy.allowedMethods = allowed
-}
-
-// listAllowedMethods returns a sorted slice (used for Allow header).
-func (proxy *ReverseProxy) listAllowedMethods() []string {
-	if proxy.allowedMethods == nil {
-		return nil
-	}
-	methods := make([]string, 0, len(proxy.allowedMethods))
-	for method := range proxy.allowedMethods {
-		methods = append(methods, method)
-	}
-	sort.Strings(methods)
-	return methods
 }
 
 // Handles incoming HTTP requests and routes them to the appropriate target.
@@ -419,110 +391,3 @@ func (proxy *ReverseProxy) directRequest(outReq *http.Request, upstreamTarget *u
 	outReq.Header.Set("X-Forwarded-Host", outReq.Host)
 	outReq.Host = upstreamTarget.Host
 }
-
-// ConfigureBalancer switches balancing strategy at runtime.
-func (proxy *ReverseProxy) ConfigureBalancer(strategy string) {
-	proxy.lbStrategy = strategy
-	proxy.balancer = newBalancer(proxy.lbStrategy, proxy.targets, proxy.healthChecksEnabled)
-}
-
-// Toggle active health checks in the load balancer at runtime.
-func (proxy *ReverseProxy) SetHealthCheckEnabled(enabled bool) {
-	proxy.healthChecksEnabled = enabled
-	proxy.balancer = newBalancer(proxy.lbStrategy, proxy.targets, proxy.healthChecksEnabled)
-}
-
-// context key for cached request key
-type cacheKeyCtxKey struct{}
-type upstreamTargetCtxKey struct{}
-// add context key for request start time (end-to-end measurement)
-type startTimeCtxKey struct{}
-
-// Checks if the client explicitly requested no-cache.
-func clientNoCache(req *http.Request) bool {
-	directives := parseCacheControl(req.Header.Get("Cache-Control"))
-	if _, ok := directives["no-cache"]; ok {
-		return true
-	}
-	if _, ok := directives["no-store"]; ok {
-		return true
-	}
-	if strings.EqualFold(req.Header.Get("Pragma"), "no-cache") {
-		return true
-	}
-	return false
-}
-
-// Joins two paths with a single slash.
-func singleJoiningSlash(a, b string) string {
-	aslash := strings.HasSuffix(a, "/")
-	bslash := strings.HasPrefix(b, "/")
-	switch {
-	case aslash && bslash:
-		return a + b[1:]
-	case !aslash && !bslash:
-		return a + "/" + b
-	default:
-		return a + b
-	}
-}
-
-// Adds back missing helper used by directRequest.
-func schemeOf(req *http.Request) string {
-	if req.TLS != nil {
-		return "https"
-	}
-	if sch := req.Header.Get("X-Forwarded-Proto"); sch != "" {
-		return sch
-	}
-	return "http"
-}
-
-// Copies headers from the source to the destination.
-func copyHeader(dst, src http.Header) {
-	for k, vv := range src {
-		for _, v := range vv {
-			dst.Add(k, v)
-		}
-	}
-}
-
-// sanitizeResponseHeaders returns a copy of headers without hop-by-hop headers.
-func sanitizeResponseHeaders(headers http.Header) http.Header {
-	sanitized := make(http.Header, len(headers))
-	for k, vv := range headers {
-		for _, v := range vv {
-			sanitized.Add(k, v)
-		}
-	}
-	for _, h := range hopHeaders {
-		sanitized.Del(h)
-	}
-	return sanitized
-}
-
-// Wraps a response with its status and headers.
-func respWithBody(status int, header http.Header) *http.Response {
-	return &http.Response{StatusCode: status, Header: header}
-}
-
-// Add an atomic counter to help build unique request IDs.
-var requestCounter int64
-
-// ensureRequestID sets X-Request-ID on the request if missing and returns it.
-func ensureRequestID(req *http.Request) string {
-	requestID := strings.TrimSpace(req.Header.Get("X-Request-ID"))
-	if requestID == "" {
-		requestID = fmt.Sprintf("%d-%d", time.Now().UnixNano(), atomic.AddInt64(&requestCounter, 1))
-		req.Header.Set("X-Request-ID", requestID)
-	}
-	return requestID
-}
-
-// getRequestID returns an existing X-Request-ID without generating a new one.
-func getRequestID(req *http.Request) string {
-	return strings.TrimSpace(req.Header.Get("X-Request-ID"))
-}
-
-
-
