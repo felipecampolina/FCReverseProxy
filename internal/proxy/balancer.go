@@ -1,8 +1,8 @@
 package proxy
 
 import (
+	"math"
 	"net/url"
-	"sort"
 	"strings"
 	"sync/atomic"
 )
@@ -65,7 +65,7 @@ func (b *roundRobinBalancer) Pick(previewOnly bool) *url.URL {
 	return nil
 }
 
-func (b *roundRobinBalancer) Acquire(_ *url.URL) func() { return func() {} } 
+func (b *roundRobinBalancer) Acquire(_ *url.URL) func() { return func() {} }
 func (b *roundRobinBalancer) Targets() []*url.URL       { return b.targets }
 func (b *roundRobinBalancer) Strategy() string          { return "round_robin" }
 
@@ -74,6 +74,7 @@ func (b *roundRobinBalancer) Strategy() string          { return "round_robin" }
 type lcState struct {
 	upstreamURL       *url.URL // upstream target URL
 	activeConnections int64    // number of in-flight requests (atomic)
+	pendingSelections int64    // in-flight reservations made by Pick (atomic)
 }
 
 type leastConnectionsBalancer struct {
@@ -95,43 +96,66 @@ func (b *leastConnectionsBalancer) Pick(previewOnly bool) *url.URL {
 		return nil
 	}
 
-	// Build a snapshot ordered by active connections (ascending, stable).
-	type snapshotEntry struct {
-		targetURL         *url.URL
-		activeConnections int64
-	}
-	snapshot := make([]snapshotEntry, 0, len(b.targetStates))
-	for _, st := range b.targetStates {
-		snapshot = append(snapshot, snapshotEntry{
-			targetURL:         st.upstreamURL,
-			activeConnections: atomic.LoadInt64(&st.activeConnections),
-		})
-	}
-	sort.SliceStable(snapshot, func(i, j int) bool { return snapshot[i].activeConnections < snapshot[j].activeConnections })
-
-	// On preview, return best by strategy without probing.
-	if previewOnly {
-		return snapshot[0].targetURL
-	}
-
-	// If health checks are disabled, pick purely by LC order.
-	if !b.healthChecksEnabled {
-		return snapshot[0].targetURL
-	}
-
-	// Health checks enabled: choose the first healthy according to LC order.
-	for _, entry := range snapshot {
-		if isTargetHealthy(entry.targetURL) {
-			return entry.targetURL
+	// Helper to compute minimal load and return candidates in stable order.
+	// load is active + pending for non-preview; active only for preview.
+	findCandidates := func(includePending bool) ([]*lcState, bool) {
+		min := int64(math.MaxInt64)
+		cands := make([]*lcState, 0, len(b.targetStates))
+		for _, st := range b.targetStates {
+			if b.healthChecksEnabled && !isTargetHealthy(st.upstreamURL) {
+				continue
+			}
+			load := atomic.LoadInt64(&st.activeConnections)
+			if includePending {
+				load += atomic.LoadInt64(&st.pendingSelections)
+			}
+			if load < min {
+				min = load
+				cands = cands[:0]
+				cands = append(cands, st)
+			} else if load == min {
+				cands = append(cands, st)
+			}
 		}
+		// when health checks are enabled, nil if no healthy targets
+		return cands, len(cands) > 0
 	}
-	return nil
+
+	// Preview: no mutation, stable tie-breaker.
+	if previewOnly {
+		if cands, ok := findCandidates(false); ok {
+			return cands[0].upstreamURL
+		}
+		return nil
+	}
+
+	// Non-preview: reserve a slot to avoid double-pick under concurrency.
+	for {
+		cands, ok := findCandidates(true)
+		if !ok {
+			// If health checks disabled and we somehow got none, re-scan without health filter.
+			if !b.healthChecksEnabled {
+				for _, st := range b.targetStates {
+					// fallback to first in stable order
+					return st.upstreamURL
+				}
+			}
+			return nil
+		}
+		best := cands[0]
+		// Try to reserve: CAS pendingSelections = p -> p+1
+		p := atomic.LoadInt64(&best.pendingSelections)
+		if atomic.CompareAndSwapInt64(&best.pendingSelections, p, p+1) {
+			return best.upstreamURL
+		}
+		// Contention detected; retry selection with updated loads.
+	}
 }
 
 func (b *leastConnectionsBalancer) Acquire(targetURL *url.URL) func() {
 	var selectedState *lcState
 	for _, st := range b.targetStates {
-		if st.upstreamURL == targetURL {
+		if sameUpstream(st.upstreamURL, targetURL) {
 			selectedState = st
 			break
 		}
@@ -139,6 +163,8 @@ func (b *leastConnectionsBalancer) Acquire(targetURL *url.URL) func() {
 	if selectedState == nil {
 		return func() {}
 	}
+	// Convert reservation into an active connection.
+	atomic.AddInt64(&selectedState.pendingSelections, -1)
 	atomic.AddInt64(&selectedState.activeConnections, 1)
 	return func() {
 		atomic.AddInt64(&selectedState.activeConnections, -1)
@@ -154,6 +180,38 @@ func (b *leastConnectionsBalancer) Targets() []*url.URL {
 }
 func (b *leastConnectionsBalancer) Strategy() string { return "least_connections" }
 
+// sameUpstream compares two URLs as upstream identities (scheme + host + normalized port).
+func sameUpstream(a, b *url.URL) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	sa := strings.ToLower(a.Scheme)
+	sb := strings.ToLower(b.Scheme)
+
+	ha := strings.ToLower(a.Hostname())
+	hb := strings.ToLower(b.Hostname())
+
+	pa := a.Port()
+	pb := b.Port()
+	if pa == "" {
+		switch sa {
+		case "http":
+			pa = "80"
+		case "https":
+			pa = "443"
+		}
+	}
+	if pb == "" {
+		switch sb {
+		case "http":
+			pb = "80"
+		case "https":
+			pb = "443"
+		}
+	}
+
+	return sa == sb && ha == hb && pa == pb
+}
 
 // newBalancer creates a Balancer based on the specified strategy.
 func newBalancer(strategy string, upstreamTargets []*url.URL, healthChecksEnabled bool) Balancer {
@@ -176,4 +234,3 @@ func (proxy *ReverseProxy) SetHealthCheckEnabled(enabled bool) {
 	proxy.healthChecksEnabled = enabled
 	proxy.balancer = newBalancer(proxy.lbStrategy, proxy.targets, proxy.healthChecksEnabled)
 }
-

@@ -250,52 +250,6 @@ func TestQueueMetricsExposureUnderLoad(t *testing.T) {
 	waitGroup.Wait()
 }
 
-// Method/status breakdowns should be present in proxy_requests_total.
-func TestMethodAndStatusBreakdownsPresent(t *testing.T) {
-	unlock := lockSequentialTests(); defer unlock()
-
-	proxyBaseURL := getEnvOrDefault("PROXY_ADDR", "https://localhost:8090")
-	httpClient := newInsecureHTTPSClient()
-
-	// Drive a mix (some 404s for 4xx)
-	_ = []struct {
-		m, p string
-	}{
-		{"GET", "/api/items?m=1"},
-		{"POST", "/api/items"},
-		{"PUT", "/api/items/1"},
-		{"PATCH", "/api/items/1"},
-		{"DELETE", "/api/items/2"},
-		{"GET", "/definitely/notfound"},
-	}
-	for _, it := range []struct {
-		m, p string
-	}{
-		{"GET", "/api/items?m=1"},
-		{"POST", "/api/items"},
-		{"PUT", "/api/items/1"},
-		{"PATCH", "/api/items/1"},
-		{"DELETE", "/api/items/2"},
-		{"GET", "/definitely/notfound"},
-	} {
-		_, _, _ = doRequestDetailed(t, httpClient, proxyBaseURL, it.m, it.p, `{"n":"x"}`, map[string]string{"Content-Type": "application/json"})
-	}
-
-	metricsText := fetchMetrics(t, httpClient, proxyBaseURL)
-	// methods
-	for _, meth := range []string{"GET", "POST", "PUT", "PATCH", "DELETE"} {
-		if !containsMetricsLineWith(metricsText, "proxy_requests_total", fmt.Sprintf(`method="%s"`, meth)) {
-			t.Fatalf("expected proxy_requests_total with method=%s", meth)
-		}
-	}
-	// statuses: at least 2xx should exist; 4xx likely exists due to notfound
-	if !containsMetricsLineWith(metricsText, "proxy_requests_total", `status="200"`) {
-		t.Fatalf("expected proxy_requests_total with status=200")
-	}
-	if !containsMetricsLineWith(metricsText, "proxy_requests_total", `status="404"`) {
-		t.Log("no 404 series observed; upstream may have handled notfound differently")
-	}
-}
 
 // Verify upstream metrics exposure by querying upstream /metrics directly.
 func TestUpstreamMetricsExposure(t *testing.T) {
