@@ -24,7 +24,7 @@ proxy:
   # Prefer 'targets' (list). If a single upstream is used, a 'target' scalar may be supported by the app.
   # Targets must be absolute URLs with scheme (http) and host:port.
   # Example: ["http://localhost:9000", "http://localhost:9001"]
- targets: ["http://localhost:9000", "http://localhost:9001", "http://localhost:9002", "http://localhost:9003", "http://localhost:9004"]
+  targets: ["http://upstream:9000", "http://upstream:9001", "http://upstream:9002", "http://upstream:9003", "http://upstream:9004","http://upstream:9005"]
 
   # Load balancer selection strategy: rr (round-robin) | lc (least-connections).
   # If unset, defaults to rr.
@@ -73,7 +73,7 @@ proxy:
     cert_file: "server.crt"
     key_file: "server.key"
 
-  
+
 # Metrics/observability stack configuration (used by `make run-metrics`).
 # Values are host ports that map to container ports in the dev stack.
 metrics:
@@ -83,8 +83,8 @@ metrics:
   grafana_port: 3000
   # Loki UI/listen port on host.
   loki_port: 3100
-  # Base URL for Loki ingestion/queries from local tools.
-  loki_url: "http://localhost:3100"
+  # Base URL for log shipping: point to Promtail (applog appends /loki/api/v1/push).
+  loki_url: "http://promtail:9080"
 
 logging:
   # Toggle emission for each log level to both local output and Loki (if configured).

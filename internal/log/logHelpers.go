@@ -11,7 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"go.yaml.in/yaml/v2"
+	// switched to v3 to match Makefile deps
+	"gopkg.in/yaml.v3"
 )
 
 // logEnabled reports whether local log printing should run.
@@ -143,7 +144,6 @@ func PushLokiWithLevel(level, app string, labels map[string]string, line string)
 	request.Header.Set("Content-Type", "application/json")
 	_, _ = lokiClient.Do(request)
 }
-
 
 // initLoki lazily reads configuration for Loki URL and logging level toggles.
 // Precedence:
