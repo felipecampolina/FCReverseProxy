@@ -23,6 +23,11 @@ ifeq ($(OS),Windows_NT)
   LOKI_PORT := $(shell powershell -NoProfile -Command "$$c=Get-Content -LiteralPath '$(CONFIG_FILE)' -Raw; if ($$c -match 'loki_port:\s*([0-9]+)') { $$matches[1] } else { 3100 }")
   # Proxy listen port from config.yaml (fallback to 8090)
   PROXY_PORT := $(shell powershell -NoProfile -Command "$$c=Get-Content -LiteralPath '$(CONFIG_FILE)' -Raw; if ($$c -match 'listen:\s*\"?\s*:(\d+)') { $$matches[1] } else { 8090 }")
+  # Safe port fallbacks (if extracted values end up empty)
+  SAFE_PROM_PORT := $(if $(strip $(PROM_PORT)),$(PROM_PORT),9090)
+  SAFE_GRAFANA_PORT := $(if $(strip $(GRAFANA_PORT)),$(GRAFANA_PORT),3000)
+  SAFE_LOKI_PORT := $(if $(strip $(LOKI_PORT)),$(LOKI_PORT),3100)
+  SAFE_PROXY_PORT := $(if $(strip $(PROXY_PORT)),$(PROXY_PORT),8090)
   # Upstream host port flags from upstream.listen (fallback to 9000..9004)
   UPSTREAM_PORT_FLAGS := $(shell powershell -NoProfile -Command "$$p=@(); if (Test-Path '$(UPSTREAM_CONFIG_FILE)') { $$c=Get-Content -LiteralPath '$(UPSTREAM_CONFIG_FILE)' -Raw; $$ms = [regex]::Matches($$c, ':\s*([0-9]+)'); foreach ($$m in $$ms) { $$p += [int]$$m.Groups[1].Value }; $$p = $$p | Sort-Object -Unique } else { $$p = 9000,9001,9002,9003,9004 }; ( $$p | ForEach-Object { '-p ' + $$_ + ':' + $$_ } ) -join ' '")
   # First upstream port (fallback to 9000)
@@ -61,6 +66,11 @@ else
   LOKI_PORT := $(shell awk -F: '/^[[:space:]]*loki_port:/ {gsub(/[[:space:]]/,"",$$2); print $$2; found=1; exit} END{if(!found) print 3100}' $(CONFIG_FILE))
   # Proxy listen port from config.yaml (fallback to 8090)
   PROXY_PORT := $(shell awk '/^[[:space:]]*listen:[[:space:]]*\"/ { if (match($$0, /:[[:space:]]*([0-9]+)/, a)) { print a[1]; found=1; exit } } END{ if(!found) print 8090 }' $(CONFIG_FILE))
+  # Safe port fallbacks (if extracted values end up empty, e.g., BSD awk issues)
+  SAFE_PROM_PORT := $(if $(strip $(PROM_PORT)),$(PROM_PORT),9090)
+  SAFE_GRAFANA_PORT := $(if $(strip $(GRAFANA_PORT)),$(GRAFANA_PORT),3000)
+  SAFE_LOKI_PORT := $(if $(strip $(LOKI_PORT)),$(LOKI_PORT),3100)
+  SAFE_PROXY_PORT := $(if $(strip $(PROXY_PORT)),$(PROXY_PORT),8090)
   # Upstream host port flags from upstream.listen (fallback to 9000..9004)
   UPSTREAM_PORT_FLAGS := $(shell sh -c "ports=$$(grep -oE ':[[:space:]]*[0-9]+' $(UPSTREAM_CONFIG_FILE) 2>/dev/null | sed -E 's/[^0-9]*([0-9]+)/\\1/' | sort -n | uniq); if [ -z \"$$ports\" ]; then ports='9000 9001 9002 9003 9004'; fi; for p in $$ports; do printf -- '-p %s:%s ' $$p $$p; done")
   # First upstream port (fallback to 9000)
@@ -108,7 +118,7 @@ clean:
 run-proxy:
 	$(NET_CREATE_APP)
 	$(RM_PROXY)
-	docker run -d --name=proxy --network $(APP_NET) -p $(PROXY_PORT):$(PROXY_PORT) -v "$(MOUNT_CUR)":/app -w /app $(DOCKER_GO) sh -c "go run -mod=mod ./cmd/server"
+	docker run -d --name=proxy --network $(APP_NET) -p $(SAFE_PROXY_PORT):$(SAFE_PROXY_PORT) -v "$(MOUNT_CUR)":/app -w /app $(DOCKER_GO) sh -c "go run -mod=mod ./cmd/server"
 	$(NET_CREATE)
 	docker network connect $(METRICS_NET) proxy
 
@@ -139,10 +149,10 @@ run-metrics:
 	$(RM_LOKI)
 	$(RM_PROMTAIL)
 	$(NET_CREATE)
-	docker run -d --name=prometheus --network $(METRICS_NET) -p $(PROM_PORT):9090 -v "$(PROM_FILE)":/etc/prometheus/prometheus.yml prom/prometheus
-	docker run -d --name=loki --network $(METRICS_NET) -p $(LOKI_PORT):3100 -v "$(LOKI_FILE)":/etc/loki/local-config.yaml grafana/loki -config.file=/etc/loki/local-config.yaml
+	docker run -d --name=prometheus --network $(METRICS_NET) -p $(SAFE_PROM_PORT):9090 -v "$(PROM_FILE)":/etc/prometheus/prometheus.yml prom/prometheus
+	docker run -d --name=loki --network $(METRICS_NET) -p $(SAFE_LOKI_PORT):3100 -v "$(LOKI_FILE)":/etc/loki/local-config.yaml grafana/loki -config.file=/etc/loki/local-config.yaml
 	docker run -d --name=promtail --network $(METRICS_NET) -v "$(PROMTAIL_FILE)":/etc/promtail/config.yml grafana/promtail -config.file=/etc/promtail/config.yml
-	docker run -d --name=grafana --network $(METRICS_NET) -p $(GRAFANA_PORT):3000 -v "$(GRAFANA_PROV)":/etc/grafana/provisioning -v "$(GRAFANA_DASH)":/var/lib/grafana/dashboards -e GF_AUTH_ANONYMOUS_ENABLED=true -e GF_AUTH_ANONYMOUS_ORG_ROLE=Admin -e GF_SECURITY_ADMIN_PASSWORD=admin grafana/grafana:latest
+	docker run -d --name=grafana --network $(METRICS_NET) -p $(SAFE_GRAFANA_PORT):3000 -v "$(GRAFANA_PROV)":/etc/grafana/provisioning -v "$(GRAFANA_DASH)":/var/lib/grafana/dashboards -e GF_AUTH_ANONYMOUS_ENABLED=true -e GF_AUTH_ANONYMOUS_ORG_ROLE=Admin -e GF_SECURITY_ADMIN_PASSWORD=admin grafana/grafana:latest
 
 stop-metrics:
 	$(RM_PROM)
