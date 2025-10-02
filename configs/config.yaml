@@ -55,11 +55,11 @@ proxy:
   # - queue_wait_header: whether to include X-Queue-* headers with observed wait time.
   queue:
     # Maximum number of requests allowed to wait when max_concurrent is reached.
-    max_queue: 1000
+    max_queue: 10
     # Maximum number of requests processed concurrently (across all targets).
-    max_concurrent: 100
+    max_concurrent: 5
     # Maximum time a request may spend waiting in the queue before timing out with 503.
-    enqueue_timeout: "2s"
+    enqueue_timeout: "1s"
     # If true, add headers like X-Queue-Wait to admitted requests for observability.
     queue_wait_header: true
 
