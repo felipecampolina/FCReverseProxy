@@ -140,12 +140,32 @@ ALERT: For development only. Prefer the Docker-based commands.
   Stops all monitoring containers.
 
 ### Recommended: Example Demo Commands
+This demo runs a complete local environment using Docker:
+- What it starts:
+  - FCReverseProxy (the proxy) using configs/config.yaml
+  - A simple upstream demo service with multiple instances/ports from configs/config-upstream.yaml
+- Pre-set configs (modifiable in configs/):
+  - Proxy listens on http://localhost:8090
+  - Upstreams servers on ports 9000–9005
+  - Load balancing: round_robin by default (changeable to least_connections)
+  - In-memory cache, request queue, and health checks enabled with sensible defaults
+  - TLS is enabled
+- What the proxy does in the demo:
+1. A client connects to **`https://localhost:8090`**.  
+2. The proxy **terminates TLS** (uses `server.crt`/`server.key` or auto self-signed for local dev).  
+3. It **checks method** (must be one of `GET, HEAD, POST, PUT, PATCH, DELETE`).  
+4. It applies **backpressure rules** (concurrency + queue).  
+5. It **selects a healthy upstream** using the **load balancer** (default **round-robin**, optional **least-connections**).  
+6. It **forwards** the request as **HTTP** to the chosen `http://upstream:PORT`.  
+7. If **cache is enabled** and the response is cacheable, it serves from/stores to in-memory cache.  
+8. It returns the upstream’s response to the client.
+
 To quickly start a full demo environment with monitoring:
 ```bash
-# Start proxy + upstream services
+# Start proxy + upstream services (creates the required Docker network)
 make run-demo
 
-# In a separate terminal, start monitoring stack
+# In a separate terminal, start the monitoring stack (Prometheus, Grafana, Loki, Promtail)
 make run-metrics
 ```
 
