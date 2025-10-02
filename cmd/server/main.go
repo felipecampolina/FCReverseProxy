@@ -6,57 +6,90 @@ import (
 	"traefik-challenge-2/internal/config"
 	"traefik-challenge-2/internal/proxy"
 
-	"github.com/joho/godotenv"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
-	// Load environment variables from the .env file
-	if err := godotenv.Load(); err != nil {
-		log.Printf("Warning: Could not load .env file (%v), using system environment variables", err)
-	}
-
-	// Load configuration
-	cfg, err := config.Load()
+	// Load application configuration from yalm file.
+	appConfig, err := config.Load()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// Initialize the reverse proxy with cache
-	rp := proxy.NewReverseProxy(
-		cfg.TargetURL,
-		proxy.NewLRUCache(cfg.Cache.MaxEntries),
-		cfg.Cache.Enabled,
+	// Build the reverse proxy:
+	// - Single upstream: reverse proxy
+	// - Multiple upstreams: reverse load-balanced proxy
+	// - Optional in-memory cache (LRU) controlled by config
+	var reverseProxy *proxy.ReverseProxy
+	if len(appConfig.TargetURLs) > 1 {
+		reverseProxy = proxy.NewReverseProxyMulti(
+			appConfig.TargetURLs,
+			proxy.NewLRUCache(appConfig.Cache.MaxEntries),
+			appConfig.Cache.Enabled,
+		)
+	} else {
+		reverseProxy = proxy.NewReverseProxy(
+			appConfig.TargetURL,
+			proxy.NewLRUCache(appConfig.Cache.MaxEntries),
+			appConfig.Cache.Enabled,
+		)
+	}
+
+	// Configure load-balancer strategy and health checks.
+	reverseProxy.ConfigureBalancer(appConfig.LoadBalancerStrategy)
+	reverseProxy.SetHealthCheckEnabled(appConfig.LoadBalancerHealthCheck)
+
+	// Restrict allowed HTTP methods as configured.
+	reverseProxy.SetAllowedMethods(appConfig.AllowedMethods)
+
+	// Queue configuration (used only for cache misses inside the proxy).
+	queueConfig := appConfig.Queue
+	reverseProxy = reverseProxy.WithQueue(queueConfig)
+
+	// Replace inline endpoint registration with helper.
+	serverMux := newServerMux(reverseProxy)
+
+	// Startup summary for observability.
+	log.Printf(
+		"Listening on %s, upstreams=%d primary=%s lb=%s hc=%v cache=%v queue(max=%d,concurrent=%d) tls(enabled=%v)",
+		appConfig.ListenAddr,
+		len(appConfig.TargetURLs),
+		appConfig.TargetURL.String(),
+		appConfig.LoadBalancerStrategy,
+		appConfig.LoadBalancerHealthCheck,
+		appConfig.Cache.Enabled,
+		queueConfig.MaxQueue,
+		queueConfig.MaxConcurrent,
+		appConfig.TLS.Enabled,
 	)
 
-	// Queue configuration comes from config
-	qcfg := cfg.Queue
-
-	// Attach queue to proxy (only used for cache misses)
-	rp = rp.WithQueue(qcfg)
-
-	// Set up the HTTP server
-	mux := http.NewServeMux()
-	// Register the proxy directly; queue is applied internally only on cache misses
-	mux.Handle("/", rp)
-
-	// Health endpoint (bypass queue to always respond quickly)
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
-	})
-
-	log.Printf("Listening on %s, proxying to %s, cache enabled: %v, queue max=%d, concurrent=%d",
-		cfg.ListenAddr, cfg.TargetURL.String(), cfg.Cache.Enabled, qcfg.MaxQueue, qcfg.MaxConcurrent)
-
-	if err := http.ListenAndServe(cfg.ListenAddr, withServerHeaders(mux)); err != nil {
+	// Start server with consistent server headers.
+	if err := startServer(appConfig, withProxyHeaders(serverMux)); err != nil {
 		log.Fatal(err)
 	}
 }
+// newServerMux assembles all HTTP endpoints.
+func newServerMux(reverseProxy *proxy.ReverseProxy) *http.ServeMux {
+	mux := http.NewServeMux()
+	// Expose Prometheus metrics.
+	mux.Handle("/metrics", promhttp.Handler())
+	// Proxy all other requests;
+	mux.Handle("/", reverseProxy)
+	// Local health endpoint for the proxy.
+	mux.HandleFunc("/healthz", healthHandler)
+	return mux
+}
 
-// Adds extra server headers to the response
-func withServerHeaders(next http.Handler) http.Handler {
+// healthHandler responds to local health checks.
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok"))
+}
+
+// withServerHeaders adds a simple Server header to every response.
+func withProxyHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Server", "go-rp/0.1")
+		w.Header().Set("Server", "FCReverseProxy/3.0")
 		next.ServeHTTP(w, r)
 	})
 }

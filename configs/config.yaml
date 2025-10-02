@@ -1,0 +1,96 @@
+# ==============================================================================
+# Reverse proxy configuration.
+#
+# Conventions
+# - Durations use Go's time format, e.g. "2s", "500ms", "1m", "1h".
+# - All ports shown are host-local ports unless otherwise noted.
+# - Unless specified, omitted fields use built-in defaults of the application.
+#
+# Load balancer strategies
+# - rr         : Round-robin (default)
+# - lc         : Least-connections
+#
+# HTTP method filtering
+# - allowed_methods: list of HTTP methods to accept. If empty or omitted, all methods are allowed.
+# - Methods are matched case-insensitively.
+# ==============================================================================
+
+proxy:
+  # Network address the proxy listens on (host:port)
+  # Example: ":8090"
+  listen: ":8090"
+
+  # Upstream targets the proxy can forward requests to.
+  # Prefer 'targets' (list). If a single upstream is used, a 'target' scalar may be supported by the app.
+  # Targets must be absolute URLs with scheme (http) and host:port.
+  # Example: ["http://localhost:9000", "http://localhost:9001"]
+  targets: ["http://upstream:9000", "http://upstream:9001", "http://upstream:9002", "http://upstream:9003", "http://upstream:9004","http://upstream:9005"]
+
+  # Load balancer selection strategy: rr (round-robin) | lc (least-connections).
+  # If unset, defaults to rr.
+  load_balancer_strategy: rr
+
+  # Whether the load balancer probes /healthz on each target and only selects healthy ones.
+  # If false, selection strictly follows the chosen strategy order and ignores health.
+  # The upstream is expected to expose GET /healthz returning 200 when healthy.
+  load_balancer_health_check: true
+
+  # Restrict which HTTP methods the proxy accepts. If omitted/empty -> allow all.
+  # Typical values: [GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS]
+  allowed_methods: [GET, HEAD, POST, PUT, PATCH, DELETE]
+
+  # Response cache configuration. Controls in-memory caching of successful responses.
+  # - enabled: toggles caching
+  # - max_entries: upper bound on cache size (number of unique responses/keys)
+  # - ttl: TTL used when upstream responses don't specify cache directives
+  cache:
+    enabled: true
+    max_entries: 2048
+    ttl: "5s"
+
+  # Request queue and concurrency controls to apply backpressure under load.
+  # - max_concurrent: upper bound on in-flight requests to upstreams.
+  # - max_queue: maximum number of requests allowed to wait (beyond in-flight).
+  # - enqueue_timeout: how long a queued request may wait before receiving 503.
+  # - queue_wait_header: whether to include X-Queue-* headers with observed wait time.
+  queue:
+    # Maximum number of requests allowed to wait when max_concurrent is reached.
+    max_queue: 10
+    # Maximum number of requests processed concurrently (across all targets).
+    max_concurrent: 5
+    # Maximum time a request may spend waiting in the queue before timing out with 503.
+    enqueue_timeout: "1s"
+    # If true, add headers like X-Queue-Wait to admitted requests for observability.
+    queue_wait_header: true
+
+  # TLS termination for the proxy listener.
+  # - enabled: when true, the proxy serves HTTPS on 'listen'.
+  # - cert_file/key_file: PEM-encoded certificate and key file paths (relative to working dir or absolute).
+  # - If enabled=true and files are missing, a self-signed cert for localhost is auto-generated.
+  #   Use only for local development/testing.
+  tls:
+    enabled: true
+    cert_file: "server.crt"
+    key_file: "server.key"
+
+
+# Metrics/observability stack configuration (used by `make run-metrics`).
+# Values are host ports that map to container ports in the dev stack.
+metrics:
+  # Prometheus UI/listen port on host.
+  prometheus_port: 9090
+  # Grafana UI/listen port on host.
+  grafana_port: 3000
+  # Loki UI/listen port on host.
+  loki_port: 3100
+  # Base URL for log shipping: point to Promtail (applog appends /loki/api/v1/push).
+  loki_url: "http://promtail:9080"
+
+logging:
+  # Toggle emission for each log level to both local output and Loki (if configured).
+  # - info_enabled : general operational information
+  # - debug_enabled: verbose diagnostics (enable only when needed)
+  # - error_enabled: errors and critical failures
+  info_enabled: true
+  debug_enabled: true
+  error_enabled: true

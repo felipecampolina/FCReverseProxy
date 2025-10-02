@@ -1,0 +1,22 @@
+# Promtail configuration file
+# Receives logs via Loki push API on 9080 and forwards them to Loki.
+# No file scraping; only applog-pushed logs will be ingested.
+
+server:
+  http_listen_port: 0
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: applog-push
+    loki_push_api:
+      server:
+        http_listen_port: 9080
+        grpc_listen_port: 0
+      labels:
+        job: applog

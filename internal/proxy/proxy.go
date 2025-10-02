@@ -1,6 +1,11 @@
 package proxy
 
 import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -8,20 +13,37 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	applog "traefik-challenge-2/internal/log"
+	imetrics "traefik-challenge-2/internal/metrics"
 )
 
 type ReverseProxy struct {
-	target    *url.URL
+	// Upstream destination used when a single backend is configured.
+	target *url.URL
+	// All upstream destinations (used by the balancer).
+	targets []*url.URL
+	// HTTP transport used to communicate with upstreams.
 	transport *http.Transport
-	cache     Cache
-	cacheOn   bool
-	// handler is the effective handler (optionally wrapped with queue.WithQueue).
+	// Cache implementation (interface) used to store cacheable responses.
+	cache Cache
+	// Global toggle to enable/disable the caching layer.
+	cacheOn bool
+	// Handler used for the upstream path; may be wrapped (e.g., by a queue).
 	handler http.Handler
+	// Optional request method allowlist; nil means allow all.
+	allowedMethods map[string]struct{}
+	// Load balancer strategy/instance used to pick/track upstreams.
+	balancer Balancer
+	lbStrategy string
+	// Whether active health checks are enabled in the balancer.
+	healthChecksEnabled bool
 }
 
 // Creates a new ReverseProxy instance with the specified target, cache, and cache toggle.
+// The default balancer is round-robin ("rr") and health checks are enabled.
 func NewReverseProxy(target *url.URL, cache Cache, cacheOn bool) *ReverseProxy {
-	tr := &http.Transport{
+	transport := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 		ForceAttemptHTTP2:     true,
@@ -30,63 +52,153 @@ func NewReverseProxy(target *url.URL, cache Cache, cacheOn bool) *ReverseProxy {
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
-	p := &ReverseProxy{
+	proxyInstance := &ReverseProxy{
 		target:    target,
-		transport: tr,
+		targets:   []*url.URL{target},
+		transport: transport,
 		cache:     cache,
 		cacheOn:   cacheOn,
+		// defaults
+		lbStrategy:          "rr",
+		healthChecksEnabled: true,
 	}
-	// default handler (queued wrapper may be added later); upstream only.
-	p.handler = http.HandlerFunc(p.serveUpstream)
-	return p
+	// Default handler (queued wrapper may be added later); upstream only.
+	proxyInstance.handler = http.HandlerFunc(proxyInstance.serveUpstream)
+	proxyInstance.balancer = newBalancer(proxyInstance.lbStrategy, proxyInstance.targets, proxyInstance.healthChecksEnabled)
+	return proxyInstance
+}
+
+// NewReverseProxyMulti builds a reverse proxy over multiple upstream targets (round-robin).
+func NewReverseProxyMulti(targets []*url.URL, cache Cache, cacheOn bool) *ReverseProxy {
+	if len(targets) == 0 {
+		panic("NewReverseProxyMulti requires at least one target")
+	}
+	proxyInstance := NewReverseProxy(targets[0], cache, cacheOn)
+	proxyInstance.targets = append([]*url.URL{}, targets...)
+	proxyInstance.balancer = newBalancer(proxyInstance.lbStrategy, proxyInstance.targets, proxyInstance.healthChecksEnabled)
+	return proxyInstance
 }
 
 // Enable bounded queue + concurrency cap by wrapping with queue.WithQueue (only used on upstream path).
-func (p *ReverseProxy) WithQueue(cfg QueueConfig) *ReverseProxy {
-	p.handler = WithQueue(http.HandlerFunc(p.serveUpstream), cfg)
-	return p
+func (proxy *ReverseProxy) WithQueue(cfg QueueConfig) *ReverseProxy {
+	proxy.handler = WithQueue(http.HandlerFunc(proxy.serveUpstream), cfg)
+	return proxy
 }
 
 // Handles incoming HTTP requests and routes them to the appropriate target.
-func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Health check endpoint (bypass queue)
-	if r.URL.Path == "/healthz" {
+// Flow:
+//   - Special-case /healthz
+//   - Enforce allowed methods (405)
+//   - Optionally compute a cache key and try to serve a HIT
+//   - Select upstream; if none healthy -> 503
+//   - Forward upstream (queued handler may wrap); observe/log/optionally cache
+func (proxy *ReverseProxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	// Record the start time for end-to-end latency metrics and logging.
+	startTime := time.Now()
+	req = req.WithContext(context.WithValue(req.Context(), startTimeCtxKey{}, startTime))
+
+	// Health check endpoint (bypass queue, cache, and upstream).
+	if req.URL.Path == "/healthz" {
+		if requestID := getRequestID(req); requestID != "" {
+			w.Header().Set("X-Request-ID", requestID)
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 		return
 	}
 
-	// Perform cache-hit check BEFORE queue so hits never wait.
-	start := time.Now()
-	if p.cacheOn && r != nil {
-		outreq := r.Clone(r.Context())
-		p.directRequest(outreq)
-		if isCacheableRequest(outreq) && !clientNoCache(outreq) {
-			key := buildCacheKey(outreq)
-			if cached, ok, stale := p.cache.Get(key); ok && !stale {
+	// Enforce allowed methods (after health check).
+	if proxy.allowedMethods != nil {
+		if _, ok := proxy.allowedMethods[req.Method]; !ok {
+			if allow := proxy.listAllowedMethods(); len(allow) > 0 {
+				w.Header().Set("Allow", strings.Join(allow, ", "))
+			}
+			if requestID := getRequestID(req); requestID != "" {
+				w.Header().Set("X-Request-ID", requestID)
+			}
+			imetrics.ObserveProxyResponse(req.Method, http.StatusMethodNotAllowed, "BYPASS", time.Since(startTime))
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+	}
+
+	// Pre-select a target to build upstream-shaped cache keys consistently.
+	selectedTarget := proxy.balancer.Pick(true)
+
+	if proxy.cacheOn && req != nil {
+		// Read & buffer body (if any) so it can be hashed and reused downstream.
+		var bodyHash string
+		if req.Body != nil {
+			if bodyBytes, err := io.ReadAll(req.Body); err == nil {
+				if len(bodyBytes) > 0 {
+					sum := sha256.Sum256(bodyBytes)
+					bodyHash = hex.EncodeToString(sum[:])
+				}
+				// Restore body for further handling
+				req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			}
+		}
+
+		// Clone for cache key calculation and upstream URL rewriting.
+		cacheProbeReq := req.Clone(req.Context())
+		if selectedTarget != nil {
+			proxy.directRequest(cacheProbeReq, selectedTarget)
+		}
+
+		if isCacheableRequest(cacheProbeReq) && !clientNoCache(cacheProbeReq) {
+			// Build cache key based on client-facing URL/host so different upstreams share cache objects.
+			originalClientHost := req.Host
+			upstreamReqHost := cacheProbeReq.Host
+			upstreamURLHost := cacheProbeReq.URL.Host
+			cacheProbeReq.Host = originalClientHost
+			cacheProbeReq.URL.Host = originalClientHost
+			cacheKey := buildCacheKey(cacheProbeReq)
+			// Restore upstream host fields for any later use.
+			cacheProbeReq.Host = upstreamReqHost
+			cacheProbeReq.URL.Host = upstreamURLHost
+
+			if bodyHash != "" {
+				cacheKey += "|bh=" + bodyHash
+			}
+			// Stash key in context for reuse on MISS.
+			req = req.WithContext(context.WithValue(req.Context(), cacheKeyCtxKey{}, cacheKey))
+
+			// Attempt a cache HIT.
+			if cachedEntry, found, isStale := proxy.cache.Get(cacheKey); found && !isStale {
+				// Prefer the original request ID that produced this cache entry.
+				requestID := strings.TrimSpace(cachedEntry.RequestID)
+				if requestID == "" {
+					requestID = ensureRequestID(req)
+				} else {
+					req.Header.Set("X-Request-ID", requestID)
+				}
+				w.Header().Set("X-Request-ID", requestID)
+
 				// Log cache hit
-				logRequestCacheHit(r)
+				applog.LogProxyRequestCacheHit(req)
 
 				// Write cached response
-				copyHeader(w.Header(), cached.Header)
+				copyHeader(w.Header(), cachedEntry.Header)
 				w.Header().Set("X-Cache", "HIT")
-				// Add/override Age based on when the object was stored
-				age := int(time.Since(cached.StoredAt).Seconds())
-				if age < 0 {
-					age = 0
+				ageSeconds := int(time.Since(cachedEntry.StoredAt).Seconds())
+				if ageSeconds < 0 {
+					ageSeconds = 0
 				}
-				w.Header().Set("Age", strconv.Itoa(age))
+				w.Header().Set("Age", strconv.Itoa(ageSeconds))
 
-				w.WriteHeader(cached.StatusCode)
-				_, _ = w.Write(cached.Body)
+				w.WriteHeader(cachedEntry.StatusCode)
+				_, _ = w.Write(cachedEntry.Body)
+
+				// Observe HIT metrics
+				imetrics.ObserveProxyResponse(req.Method, cachedEntry.StatusCode, "HIT", time.Since(startTime))
 
 				// Log response
-				logResponseCacheHit(
-					cached.StatusCode,
-					len(cached.Body),
-					time.Since(start),
+				applog.LogProxyResponseCacheHit(
+					cachedEntry.StatusCode,
+					len(cachedEntry.Body),
+					time.Since(startTime),
 					w.Header(),
-					r,
+					req,
 					w,
 					false,
 					"",
@@ -96,20 +208,84 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Cache miss/bypass: go through the (possibly queued) upstream handler.
-	p.handler.ServeHTTP(w, r)
+	// No HIT, advance balancer state to choose actual upstream.
+	selectedTarget = proxy.balancer.Pick(false)
+	if selectedTarget == nil {
+		// No healthy upstreams.
+		if requestID := getRequestID(req); requestID != "" {
+			w.Header().Set("X-Request-ID", requestID)
+		}
+		imetrics.ObserveProxyResponse(req.Method, http.StatusServiceUnavailable, "BYPASS", time.Since(startTime))
+		applog.LogProxyError(http.StatusServiceUnavailable, "BYPASS", "", req, fmt.Errorf("no healthy upstream targets"))
+		http.Error(w, "no healthy upstream targets", http.StatusServiceUnavailable)
+		return
+	}
+
+	// We are going upstream: ensure we have a request ID and echo it.
+	requestID := ensureRequestID(req)
+	w.Header().Set("X-Request-ID", requestID)
+
+	// MISS/BYPASS request log before forwarding upstream.
+	applog.LogProxyRequest(req)
+
+	// Store chosen target for reuse by upstream path (and potential queue wrapper).
+	req = req.WithContext(context.WithValue(req.Context(), upstreamTargetCtxKey{}, selectedTarget))
+	proxy.handler.ServeHTTP(w, req)
 }
 
 // Core upstream path (no cache-hit logic; queue may wrap this).
-func (p *ReverseProxy) serveUpstream(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
-	ctx := r.Context()
-	outreq := r.Clone(ctx)
-	p.directRequest(outreq)
+// Responsible for: rewriting request, forwarding, collecting metrics, and optionally caching response.
+func (proxy *ReverseProxy) serveUpstream(w http.ResponseWriter, req *http.Request) {
+	upstreamStartTime := time.Now()
+	ctx := req.Context()
+
+	// Prefer ServeHTTP start time for end-to-end metrics, fallback to local start.
+	endToEndStart, _ := ctx.Value(startTimeCtxKey{}).(time.Time)
+	if endToEndStart.IsZero() {
+		endToEndStart = upstreamStartTime
+	}
+
+	// Reuse previously chosen target (from cache phase) if present; otherwise pick now.
+	var upstreamTarget *url.URL
+	if v := ctx.Value(upstreamTargetCtxKey{}); v != nil {
+		if u, ok := v.(*url.URL); ok && u != nil {
+			upstreamTarget = u
+		}
+	}
+	if upstreamTarget == nil {
+		upstreamTarget = proxy.balancer.Pick(false)
+	}
+	if upstreamTarget == nil {
+		imetrics.ObserveProxyResponse(req.Method, http.StatusServiceUnavailable, "BYPASS", time.Since(endToEndStart))
+		http.Error(w, "no healthy upstream targets", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Acquire increments active in-flight counters for the selected upstream.
+	releaseFunc := proxy.balancer.Acquire(upstreamTarget)
+	defer releaseFunc()
+
+	// Clone and rewrite the outbound request for the selected upstream.
+	outboundReq := req.Clone(ctx)
+	proxy.directRequest(outboundReq, upstreamTarget)
+
+	// In-flight upstream metric (per target).
+	imetrics.IncProxyUpstreamInflight(upstreamTarget.Host)
+	defer imetrics.DecProxyUpstreamInflight(upstreamTarget.Host)
 
 	// Forward request to upstream
-	resp, err := p.transport.RoundTrip(outreq)
+	upstreamResp, err := proxy.transport.RoundTrip(outboundReq)
 	if err != nil {
+		statusCode := http.StatusBadGateway
+		if ctx.Err() != nil {
+			statusCode = http.StatusRequestTimeout
+		}
+		imetrics.ObserveProxyUpstreamResponse(upstreamTarget.Host, req.Method, statusCode, time.Since(upstreamStartTime))
+		// Also observe final proxy response (bypass cache)
+		imetrics.ObserveProxyResponse(req.Method, statusCode, "BYPASS", time.Since(endToEndStart))
+
+		applog.LogProxyError(statusCode, "BYPASS", upstreamTarget.Host, req, err)
+
 		select {
 		case <-ctx.Done():
 			w.WriteHeader(http.StatusRequestTimeout)
@@ -118,154 +294,100 @@ func (p *ReverseProxy) serveUpstream(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	defer resp.Body.Close()
+	defer upstreamResp.Body.Close()
 
-	// Copy response to client and optionally cache it
-	buf, readErr := io.ReadAll(resp.Body)
+	// Read upstream response entirely (buffer for potential caching).
+	responseBody, readErr := io.ReadAll(upstreamResp.Body)
 	if readErr != nil {
 		http.Error(w, readErr.Error(), http.StatusBadGateway)
 		return
 	}
+
 	// Use raw upstream headers for cacheability/TTL decisions,
-	// but sanitize (remove hop-by-hop) for forwarding/storing.
-	rawHeaders := resp.Header.Clone()
-	cleanHeaders := sanitizeResponseHeaders(rawHeaders)
-	status := resp.StatusCode
+	rawUpstreamHeaders := upstreamResp.Header.Clone()
+	sanitizedHeaders := sanitizeResponseHeaders(rawUpstreamHeaders)
+	statusCode := upstreamResp.StatusCode
 
 	// Determine X-Cache header value
-	eligibleReq := p.cacheOn && isCacheableRequest(outreq) && !clientNoCache(outreq)
-	ttl, cacheableResp := isCacheableResponse(respWithBody(status, rawHeaders))
-	xcache := "BYPASS"
-	if eligibleReq && cacheableResp {
-		xcache = "MISS"
+	isRequestEligibleForCache := proxy.cacheOn && isCacheableRequest(outboundReq) && !clientNoCache(outboundReq)
+	cacheTTL, isCacheableResponse := isCacheableResponse(respWithBody(statusCode, rawUpstreamHeaders))
+	xCacheState := "BYPASS"
+	if isRequestEligibleForCache && isCacheableResponse {
+		xCacheState = "MISS"
 	}
 
 	// Write headers and body to the client
-	copyHeader(w.Header(), cleanHeaders)
-	// Ensure Content-Length reflects buffered body size if not already set
+	copyHeader(w.Header(), sanitizedHeaders)
 	if _, ok := w.Header()["Content-Length"]; !ok {
-		w.Header().Set("Content-Length", strconv.Itoa(len(buf)))
+		w.Header().Set("Content-Length", strconv.Itoa(len(responseBody)))
 	}
-	w.Header().Set("X-Cache", xcache)
-	w.WriteHeader(status)
-	_, _ = w.Write(buf)
+	w.Header().Set("X-Cache", xCacheState)
+	w.WriteHeader(statusCode)
+	_, _ = w.Write(responseBody)
+
+	// Per-upstream observation
+	upstreamLabel := rawUpstreamHeaders.Get("X-Upstream")
+	if strings.TrimSpace(upstreamLabel) == "" {
+		upstreamLabel = upstreamTarget.Host
+	}
+	upstreamDuration := time.Since(upstreamStartTime)
+	imetrics.ObserveProxyUpstreamResponse(upstreamLabel, req.Method, statusCode, upstreamDuration)
+
+	// End-to-end proxy response (MISS or BYPASS)
+	imetrics.ObserveProxyResponse(req.Method, statusCode, xCacheState, time.Since(endToEndStart))
 
 	// Log response
-	logResponseCacheHit(
-		status,
-		len(buf),
-		time.Since(start),
+	applog.LogProxyResponseCacheHit(
+		statusCode,
+		len(responseBody),
+		upstreamDuration,
 		w.Header(),
-		r,
+		req,
 		w,
-		false, // Not applicable for this case
+		false,
 		"",
 	)
 
 	// Cache the response if eligible (on MISS)
-	if eligibleReq && cacheableResp {
-		key := buildCacheKey(outreq)
-		p.cache.Set(key, &CachedResponse{
-			StatusCode: status,
-			Header:     cleanHeaders,
-			Body:       buf,
+	if isRequestEligibleForCache && isCacheableResponse {
+		// Reuse precomputed key (with body hash) if available
+		cacheKey, _ := req.Context().Value(cacheKeyCtxKey{}).(string)
+		if cacheKey == "" {
+			// Fallback (no body hash) — should rarely happen
+			cacheKey = buildCacheKey(outboundReq)
+		}
+		proxy.cache.Set(cacheKey, &CachedResponse{
+			StatusCode: statusCode,
+			Header:     sanitizedHeaders,
+			Body:       responseBody,
 			StoredAt:   time.Now(),
-		}, ttl)
+			RequestID:  getRequestID(req),
+		}, cacheTTL)
 	}
 }
 
-// Rewrites the request URL, path, and hop-by-hop headers.
-func (p *ReverseProxy) directRequest(outreq *http.Request) {
-	// Rewrite URL
-	outreq.URL.Scheme = p.target.Scheme
-	outreq.URL.Host = p.target.Host
-	outreq.URL.Path = singleJoiningSlash(p.target.Path, outreq.URL.Path)
+// Rewrites the request URL, path, and hop-by-hop headers before sending to the upstream.
+func (proxy *ReverseProxy) directRequest(outReq *http.Request, upstreamTarget *url.URL) {
+	// Rewrite URL & path
+	outReq.URL.Scheme = upstreamTarget.Scheme
+	outReq.URL.Host = upstreamTarget.Host
+	outReq.URL.Path = singleJoiningSlash(upstreamTarget.Path, outReq.URL.Path)
 
-	// Remove hop-by-hop headers
-	for _, h := range hopHeaders {
-		outreq.Header.Del(h)
+	// Remove hop-by-hop headers (per RFC 7230)
+	for _, hopHeader := range hopHeaders {
+		outReq.Header.Del(hopHeader)
 	}
 
 	// Set X-Forwarded-* headers and Host
-	if clientIP, _, err := net.SplitHostPort(outreq.RemoteAddr); err == nil && clientIP != "" {
-		xf := outreq.Header.Get("X-Forwarded-For")
-		if xf == "" {
-			outreq.Header.Set("X-Forwarded-For", clientIP)
+	if clientIP, _, err := net.SplitHostPort(outReq.RemoteAddr); err == nil && clientIP != "" {
+		xff := outReq.Header.Get("X-Forwarded-For")
+		if xff == "" {
+			outReq.Header.Set("X-Forwarded-For", clientIP)
 		} else {
-			outreq.Header.Set("X-Forwarded-For", xf+", "+clientIP)
+			outReq.Header.Set("X-Forwarded-For", xff+", "+clientIP)
 		}
 	}
-	outreq.Header.Set("X-Forwarded-Proto", schemeOf(outreq))
-	outreq.Header.Set("X-Forwarded-Host", outreq.Host)
-	outreq.Host = p.target.Host
+	outReq.Header.Set("X-Forwarded-Proto", schemeOf(outReq))
+	outReq.Header.Set("X-Forwarded-Host", outReq.Host)
+	outReq.Host = upstreamTarget.Host
 }
-
-// Determines the scheme of the request (http or https).
-func schemeOf(r *http.Request) string {
-	if r.TLS != nil {
-		return "https"
-	}
-	if sch := r.Header.Get("X-Forwarded-Proto"); sch != "" {
-		return sch
-	}
-	return "http"
-}
-
-// Copies headers from the source to the destination.
-func copyHeader(dst, src http.Header) {
-	for k, vv := range src {
-		for _, v := range vv {
-			dst.Add(k, v)
-		}
-	}
-}
-
-// sanitizeResponseHeaders returns a copy of h without hop-by-hop headers.
-func sanitizeResponseHeaders(h http.Header) http.Header {
-	out := make(http.Header, len(h))
-	for k, vv := range h {
-		// copy values
-		for _, v := range vv {
-			out.Add(k, v)
-		}
-	}
-	for _, hh := range hopHeaders {
-		out.Del(hh)
-	}
-	return out
-}
-
-// Wraps a response with its status and headers.
-func respWithBody(status int, header http.Header) *http.Response {
-	return &http.Response{StatusCode: status, Header: header}
-}
-
-// Checks if the client explicitly requested no-cache.
-func clientNoCache(r *http.Request) bool {
-	cc := parseCacheControl(r.Header.Get("Cache-Control"))
-	if _, ok := cc["no-cache"]; ok {
-		return true
-	}
-	if _, ok := cc["no-store"]; ok {
-		return true
-	}
-	if strings.EqualFold(r.Header.Get("Pragma"), "no-cache") {
-		return true
-	}
-	return false
-}
-
-// Joins two paths with a single slash.
-func singleJoiningSlash(a, b string) string {
-	aslash := strings.HasSuffix(a, "/")
-	bslash := strings.HasPrefix(b, "/")
-	switch {
-	case aslash && bslash:
-		return a + b[1:]
-	case !aslash && !bslash:
-		return a + "/" + b
-	default:
-		return a + b
-	}
-}
-

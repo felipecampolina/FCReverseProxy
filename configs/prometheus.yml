@@ -1,0 +1,21 @@
+# Prometheus configuration file
+# Scrape metrics from the reverse proxy and upstream service.
+# Adjust targets and ports as needed.
+# Note: Prometheus uses Go duration format for intervals (e.g., "5s" for 5 seconds).
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: "reverse-proxy"
+    scheme: https
+    metrics_path: /metrics
+    tls_config:
+      insecure_skip_verify: true   
+    static_configs:
+      - targets: ["host.docker.internal:8090"] 
+
+  - job_name: "upstream"
+    scheme: http
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:9000"]
