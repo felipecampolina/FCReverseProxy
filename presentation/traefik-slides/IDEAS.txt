@@ -1,0 +1,41 @@
+BEGGING -- matrix code with a fun fact?
+
+ABOUT MYSELF
+
+WHAT IS AN REVERSE PROXY AND HOW IT IS DIFERENT FROM OTHER PROXIES 
+
+MY SOLUTION -- FEATURE EXPLATITON , IMPLEMATITON , TESTS(UNIT AND ANOTHER ONE) , RESULTS 
+
+Reverse Proxy?
+Caching
+Load Balancer(rr and lc)
+Health Checker
+Allowed methods
+Tls Termination 
+Request Queue(concurrency + queue)
+Metrics and Dashboard
+Logging
+Reverse Proxy?
+
+
+Next steps and improvemt
+- Rate limit
+- Group-Based Scaling
+- DDoS Mitigation
+- Advanced Caching
+- TLS/SSL Passthrough
+- Protocol Support
+- Web Application Firewall (WAF)
+- Cache for autorization
+
+DEMOSTRATION 
+Demo enviroment configs 
+Demo enviroment diagram 
+GO live
+
+
+
+Q/A
+
+
+END
