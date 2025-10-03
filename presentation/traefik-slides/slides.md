@@ -540,179 +540,319 @@ table {
 These tests ensure correctness, performance, and adherence to HTTP caching standards.
 
 ---
+clicks: 4
+---
 
-###  Caching — Results from demo enviroment
+### Caching — Results from Demo Environment
 
+- **Requests**: 8 requests sent to the same endpoint.
+
+<!-- Fixed title block -->
+<div class="relative h-8 text-xl font-semibold mt-4">
+  <div v-click="[1]" class="absolute inset-0">Proxy Dashboard</div>
+  <div v-click="[2]" class="absolute inset-0">Upstream Dashboard</div>
+  <div v-click="[3]" class="absolute inset-0">Cache MISS Response Header</div>
+  <div v-click="[4]" class="absolute inset-0">Cache HIT Response Header</div>
+</div>
+
+<!-- Fixed image block -->
+<div class="relative w-full h-[400px] mt-4">
+  <img v-click="[1]" src="./photos/cache/01test_proxy_dashboard.png" class="absolute inset-0 w-full h-full object-contain">
+  <img v-click="[2]" src="./photos/cache/01test_upsteram_dashboard.png" class="absolute inset-0 w-full h-full object-contain">
+  <img v-click="[3]" src="./photos/cache/01test_miss_response_header.png" class="absolute inset-0 w-full h-full object-contain">
+  <img v-click="[4]" src="./photos/cache/01test_hit_response_header.png" class="absolute inset-0 w-full h-full object-contain">
+</div>
+
+---
+
+## Load Balancer and Health Checker
+
+- Distributes traffic across multiple upstream servers.
+- Ensures high availability and scalability.
+- Supports two strategies:
+  - **Round Robin**: Distributes requests evenly across all servers.
+  - **Least Connections**: Routes requests to the server with the fewest active connections.
+- Includes **health checks** to detect and exclude unhealthy servers.
+
+---
+
+### Load Balancer Implementation in FCReverseProxy
+
+- **Purpose**: Distribute traffic efficiently and ensure fault tolerance.
+- **Strategies**:
+  - **Round Robin**: Cycles through servers in order.
+  - **Least Connections**: Prefers servers with fewer active requests.
+- **Health Checks**:
+  - Enabled by default.
+  - Excludes unhealthy servers from the pool.
+
+---
+
+### How It Works
+
+<div class="grid grid-cols-2 gap-6 leading-relaxed">
+
+<div>
+
+<div class="mb-6">
+  <h3>1. Strategy Selection</h3>
+  <ul>
+    <li>Configured via <code>ConfigureBalancer</code></li>
+    <li>Supports <code>round_robin</code> and <code>least_connections</code></li>
+  </ul>
+</div>
+
+<div class="mb-6">
+  <h3>2. Health Checks</h3>
+  <ul>
+    <li>Enabled/disabled via <code>SetHealthCheckEnabled</code></li>
+    <li>Excludes unhealthy servers from selection</li>
+  </ul>
+</div>
+
+</div>
+
+<div>
+
+<div class="mb-6">
+  <h3>3. Round Robin</h3>
+  <ul>
+    <li>Distributes requests evenly</li>
+    <li>Ignores server load</li>
+  </ul>
+</div>
+
+<div class="mb-6">
+  <h3>4. Least Connections</h3>
+  <ul>
+    <li>Prefers servers with fewer active requests</li>
+    <li>Balances load dynamically</li>
+    <li>If multiple servers have the same load, prioritizes the first healthy server(possible improvement)</li>
+  </ul>
+</div>
+
+</div>
+
+</div>
+---
+
+### Code Example: `isTargetHealthy`
+
+<div class="grid grid-cols-2 gap-6 leading-relaxed">
+
+<div>
+
+```go
+func isTargetHealthy(targetURL *url.URL) bool {
+	// Build absolute health URL at root (/healthz).
+	scheme := targetURL.Scheme
+	if scheme == "" {
+		scheme = "http"
+	}
+	healthURL := &url.URL{
+		Scheme: scheme,
+		Host:   targetURL.Host,
+		Path:   "/healthz",
+	}
+	healthRequest, err := http.NewRequest("GET", healthURL.String(), nil)
+	if err != nil {
+		return false
+	}
+	// Hint to avoid connection reuse issues on failing endpoints.
+	healthRequest.Close = true
+	healthResponse, err := healthProbeHTTPClient.Do(healthRequest)
+	if err != nil {
+		return false
+	}
+	defer healthResponse.Body.Close()
+	// Consider 2xx/3xx as healthy.
+	return healthResponse.StatusCode >= 200 && healthResponse.StatusCode < 400
+}
+```
+
+</div>
+
+<div>
+
+### Observation
+
+- The function performs a **shallow health check** against the `/healthz` endpoint of each upstream target.
+- It uses the same scheme and issues a **GET request**.
+- Declares targets as healthy **only if they return 2xx or 3xx responses**, ensuring a conservative approach to availability.
+
+</div>
+
+</div>
 
 
 ---
 
-# Code
+### Code Example Round Robin: `Pick`
 
-Use code snippets and get the highlighting directly, and even types hover!
+<div class="grid grid-cols-2 gap-6 leading-relaxed">
+<div>
 
-```ts [filename-example.ts] {all|4|6|6-7|9|all} twoslash
-// TwoSlash enables TypeScript hover information
-// and errors in markdown code blocks
-// More at https://shiki.style/packages/twoslash
-import { computed, ref } from 'vue'
+```go
+func (b *roundRobinBalancer) Pick(previewOnly bool) *url.URL {
+	if len(b.targets) == 0 {
+		return nil
+	}
+	if previewOnly {
+		n := atomic.LoadUint64(&b.nextIndex)
+		return b.targets[n%uint64(len(b.targets))]
+	}
+	startIndex := atomic.AddUint64(&b.nextIndex, 1) - 1
+	targetCount := uint64(len(b.targets))
 
-const count = ref(0)
-const doubled = computed(() => count.value * 2)
+	if !b.healthChecksEnabled {
+		return b.targets[startIndex%targetCount]
+	}
 
-doubled.value = 2
+	for i := uint64(0); i < targetCount; i++ {
+		candidateTarget := b.targets[(startIndex+i)%targetCount]
+		if isTargetHealthy(candidateTarget) {
+			return candidateTarget // Important so if healthy,  does not need to check the others
+		}
+	}
+	return nil
+}
 ```
 
-<arrow v-click="[4, 5]" x1="350" y1="310" x2="195" y2="342" color="#953" width="2" arrowSize="1" />
+</div>
+<div>
 
-<!-- This allow you to embed external code blocks -->
-<<< @/snippets/external.ts#snippet
+### Observation
 
-<!-- Footer -->
+- Implements a **simple, fair** rotation through available targets.
+- If `healthChecksEnabled`, it checks for healthy targets in order(worst case).
+- Uses atomic operations to ensure **thread-safe indexing**.
+- Returns `nil` if no targets or no healthy target is found.
 
-[Learn more](https://sli.dev/features/line-highlighting)
 
-<!-- Inline style -->
+</div>
+</div>
+
+---
+
+### Code Example Least Connections: `Pick`
+
+<div class="grid grid-cols-2 gap-6 leading-relaxed">
+<div>
+
+```go
+func (b *leastConnectionsBalancer) Pick(previewOnly bool) *url.URL {
+	if len(b.targetStates) == 0 {
+		return nil
+	}
+
+	findCandidates := func(includePending bool) ([]*lcState, bool) {
+		min := int64(math.MaxInt64)
+		cands := []*lcState{}
+		for _, st := range b.targetStates {
+			if b.healthChecksEnabled && !isTargetHealthy(st.upstreamURL) {
+				continue
+			}
+			load := atomic.LoadInt64(&st.activeConnections)
+			if includePending {
+				load += atomic.LoadInt64(&st.pendingSelections)
+			}
+			if load < min {
+				min = load
+				cands = []*lcState{st}
+			} else if load == min {
+				cands = append(cands, st) 
+			}
+		}
+		return cands, len(cands) > 0
+	}
+
+	if previewOnly {
+		if cands, ok := findCandidates(false); ok {
+			return cands[0].upstreamURL
+		}
+		return nil
+	}
+
+	for {
+		cands, ok := findCandidates(true)
+		if !ok {
+			if !b.healthChecksEnabled {
+				for _, st := range b.targetStates {
+					return st.upstreamURL
+				}
+			}
+			return nil
+		}
+		best := cands[0]
+		p := atomic.LoadInt64(&best.pendingSelections)
+		if atomic.CompareAndSwapInt64(&best.pendingSelections, p, p+1) {
+			return best.upstreamURL
+		}
+	}
+}
+```
+
+</div>
+<div>
+
+### Observation
+
+- Picks the **least loaded** upstream using `activeConnections` and optionally `pendingSelections`.
+- Supports health checks and skips unhealthy backends.
+- Uses **atomic CAS** to safely reserve pending slots under contention.
+- In preview mode, avoids any state mutation.
+- Ideal for **high-concurrency systems** where minimizing overload is key.
+
+</div>
+</div>
+
+---
+
+### Load Balancer and Health Checker — Tests
+
 <style>
-.footnotes-sep {
-  @apply mt-5 opacity-10;
-}
-.footnotes {
-  @apply text-sm opacity-75;
-}
-.footnote-backref {
-  display: none;
+table {
+  font-size: 0.70rem;
+  line-height: 1.1;
 }
 </style>
 
-<!--
-Notes can also sync with clicks
+| **Test Category**                         | **Description**                                                                | **Function**                                      |
+|--------------------------------------|-----------------------------------------------------------------------------|--------------------------------------------------|
+| **Round Robin — Order/Rotation**         | Ensures even, deterministic rotation without health checks.                | `TestRoundRobinBalancer`                         |
+| **Least Connections — Basic Selection**  | Picks target with the fewest active connections and reflects acquire/release. | `TestLeastConnectionsBalancerBasic`              |
+| **Health Checks — Round Robin**          | Skips unhealthy targets; only healthy backends are selected.               | `TestRoundRobinBalancerHealthChecks`             |
+| **Health Checks — LC Tie-break**        | Skips unhealthy; deterministic tie-break among equally loaded healthy targets. | `TestLeastConnectionsBalancerHealthChecks`    |
+| **All Backends Unhealthy**              | Returns nil when no healthy targets are available.                          | `TestRoundRobinBalancerHealthAllUnhealthy`       |
 
-[click] This will be highlighted after the first click
+These tests validate fair distribution, correct connection accounting, and resilience under backend failures.
 
-[click] Highlighted with `count = ref(0)`
 
-[click:3] Last click (skip two clicks)
--->
 
 ---
-level: 2
+clicks: 3
 ---
 
-# Shiki Magic Move
+### Load Balancear — Results from Demo Environment
 
-Powered by [shiki-magic-move](https://shiki-magic-move.netlify.app/), Slidev supports animations across multiple code snippets.
+- **Requests**: 12 requests sent to different endpoints using the **Round Robin (RR)** strategy.
 
-Add multiple code blocks and wrap them with <code>````md magic-move</code> (four backticks) to enable the magic move. For example:
+<!-- Fixed title block -->
+<div class="relative h-8 text-xl font-semibold mt-4">
+  <div v-click="[1]" class="absolute inset-0">Proxy Dashboard </div>
+   <div v-click="[2]" class="absolute inset-0">Proxy Dashboard - Total requests by X-Upstream (cumulative)</div>
+  <div v-click="[3]" class="absolute inset-0">Upstream Dashboard</div>
+</div>
 
-````md magic-move {lines: true}
-```ts {*|2|*}
-// step 1
-const author = reactive({
-  name: 'John Doe',
-  books: [
-    'Vue 2 - Advanced Guide',
-    'Vue 3 - Basic Guide',
-    'Vue 4 - The Mystery'
-  ]
-})
-```
-
-```ts {*|1-2|3-4|3-4,8}
-// step 2
-export default {
-  data() {
-    return {
-      author: {
-        name: 'John Doe',
-        books: [
-          'Vue 2 - Advanced Guide',
-          'Vue 3 - Basic Guide',
-          'Vue 4 - The Mystery'
-        ]
-      }
-    }
-  }
-}
-```
-
-```ts
-// step 3
-export default {
-  data: () => ({
-    author: {
-      name: 'John Doe',
-      books: [
-        'Vue 2 - Advanced Guide',
-        'Vue 3 - Basic Guide',
-        'Vue 4 - The Mystery'
-      ]
-    }
-  })
-}
-```
-
-Non-code blocks are ignored.
-
-```vue
-<!-- step 4 -->
-<script setup>
-const author = {
-  name: 'John Doe',
-  books: [
-    'Vue 2 - Advanced Guide',
-    'Vue 3 - Basic Guide',
-    'Vue 4 - The Mystery'
-  ]
-}
-</script>
-```
-````
+<!-- Fixed image block -->
+<div class="relative w-full h-[400px] mt-4">
+  <img v-click="[1]" src="./photos/balancear/02_test_totalRequest_rp.png" class="absolute inset-0 w-full h-full object-contain">
+  <img v-click="[2]" src="./photos/balancear/02_test_byUpstream.png" class="absolute inset-0 w-full h-full object-contain">
+  <img v-click="[3]" src="./photos/balancear/02_test_totalRequest_upstream.png" class="absolute inset-0 w-full h-full object-contain">
+</div>
 
 ---
 
-# Components
-
-<div grid="~ cols-2 gap-4">
-<div>
-
-You can use Vue components directly inside your slides.
-
-We have provided a few built-in components like `<Tweet/>` and `<Youtube/>` that you can use directly. And adding your custom components is also super easy.
-
-```html
-<Counter :count="10" />
-```
-
-<!-- ./components/Counter.vue -->
-<Counter :count="10" m="t-4" />
-
-Check out [the guides](https://sli.dev/builtin/components.html) for more.
-
-</div>
-<div>
-
-```html
-<Tweet id="1390115482657726468" />
-```
-
-<Tweet id="1390115482657726468" scale="0.65" />
-
-</div>
-</div>
-
-<!--
-Presenter note with **bold**, *italic*, and ~~striked~~ text.
-
-Also, HTML elements are valid:
-<div class="flex w-full">
-  <span style="flex-grow: 1;">Left content</span>
-  <span>Right content</span>
-</div>
--->
-
----
-class: px-20
 ---
 
 # Themes
