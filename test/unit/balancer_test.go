@@ -170,6 +170,67 @@ func TestRoundRobinBalancerHealthChecks(t *testing.T) {
 	}
 }
 
+func TestLeastConnectionsBalancerHealthChecks(t *testing.T) {
+	banner("balancer_test.go")
+
+	healthyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	unhealthyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	serverUnhealthy := httptest.NewServer(unhealthyHandler)
+	defer serverUnhealthy.Close()
+	serverHealthy1 := httptest.NewServer(healthyHandler)
+	defer serverHealthy1.Close()
+	serverHealthy2 := httptest.NewServer(healthyHandler)
+	defer serverHealthy2.Close()
+
+	targets := []*url.URL{
+		mustURL(t, serverUnhealthy.URL),
+		mustURL(t, serverHealthy1.URL),
+		mustURL(t, serverHealthy2.URL),
+	}
+	lcHealthBalancer := proxy.NewLeastConnectionsBalancer(targets, true)
+
+	unhealthyHost := mustURL(t, serverUnhealthy.URL).Host
+	healthyHost1 := mustURL(t, serverHealthy1.URL).Host
+	healthyHost2 := mustURL(t, serverHealthy2.URL).Host
+
+	// Deterministic tie-break: always pick the first healthy candidate.
+	var expectedHost string
+	for i := 0; i < 8; i++ {
+		pickedTarget := lcHealthBalancer.Pick(false)
+		if pickedTarget == nil {
+			t.Fatalf("expected a healthy target, got nil")
+		}
+		release := lcHealthBalancer.Acquire(pickedTarget)
+
+		if pickedTarget.Host == unhealthyHost {
+			t.Fatalf("picked unhealthy target %s", pickedTarget.Host)
+		}
+		if expectedHost == "" {
+			// First healthy pick establishes the deterministic choice.
+			if pickedTarget.Host != healthyHost1 && pickedTarget.Host != healthyHost2 {
+				t.Fatalf("picked unexpected host %s", pickedTarget.Host)
+			}
+			expectedHost = pickedTarget.Host
+		} else if pickedTarget.Host != expectedHost {
+			t.Fatalf("expected deterministic tie-break to keep picking %s, got %s", expectedHost, pickedTarget.Host)
+		}
+		release()
+	}
+}
+
 func TestRoundRobinBalancerHealthAllUnhealthy(t *testing.T) {
 	banner("balancer_test.go")
 
