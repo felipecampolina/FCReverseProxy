@@ -1,19 +1,12 @@
 ---
 # try also 'default' to start simple
 theme: seriph
-# random image from a curated Unsplash collection by Anthony
-# like them? see https://unsplash.com/collections/94734566/slidev
 background: https://upload.wikimedia.org/wikipedia/commons/c/cc/Digital_rain_animation_medium_letters_shine.gif
-# some information about your slides (markdown enabled)
-title: FCReverseProxy-presentation
-info: |
-  ## Slidev Starter Template
-  Presentation slides for developers.
 
-  Learn more at [Sli.dev](https://sli.dev)
-# apply UnoCSS classes to the current slide
+title: FCReverseProxy-presentation
+
 class: text-center
-# https://sli.dev/features/drawing
+
 drawings:
   persist: false
 # slide transition: https://sli.dev/guide/animations.html#slide-transitions
@@ -62,16 +55,16 @@ class: text-center
 ---
 
 ##  Experience
-- 🚀 **Full Stack Developer @ Biobyte Brasil** *(Feb 2024 – Present)*  
+-  **Full Stack Developer @ Biobyte Brasil** *(Feb 2024 – Present)*  
   *Angular · Node.js · Express.js · TypeScript · SQL · MongoDB · AWS (EC2, S3, Lambda, IAM) · GPT/LLMs · RAG Pipelines · Pentaho DTI*  
 
-- 🎓 **Web Developer Scholarship Holder @ PUCTEC** *(Jul 2023 – Dec 2023)*  
+-  **Web Developer Scholarship Holder @ PUCTEC** *(Jul 2023 – Dec 2023)*  
   *HTML · CSS · JavaScript · Bootstrap · PHP · Laravel · WordPress · MySQL · Git*  
 
-- 💻 **Front-End Developer Trainee @ Abil Agency** *(May 2022 – Jun 2023)*  
+-  **Front-End Developer Trainee @ Abil Agency** *(May 2022 – Jun 2023)*  
   *HTML · CSS · JavaScript · Bootstrap · UI/UX · Responsive Design · SEO*  
 
-- 🧑‍🏫 **Technical Tutor @ PUC Minas** *(Jun 2022 – Jul 2023)*  
+-  **Technical Tutor @ PUC Minas** *(Jun 2022 – Jul 2023)*  
   *C · C++ · Java · Programming Fundamentals · Algorithms*  
 
 ---
@@ -1329,3 +1322,15 @@ table {
 
 This section will be demonstrated live during the presentation. Stay tuned for a working demo showcasing these features in action!
 
+---
+theme: default
+layout: center
+class: text-center
+---
+
+# Questions & Answers
+
+<div class="text-center">
+  <h2>Have any questions?</h2>
+  <p>Feel free to ask! Let's discuss and clarify any doubts you have.</p>
+</div>
