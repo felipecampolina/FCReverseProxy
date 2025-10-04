@@ -63,7 +63,7 @@ class: text-center
 
 ##  Experience
 - 🚀 **Full Stack Developer @ Biobyte Brasil** *(Feb 2024 – Present)*  
-  *Angular · Node.js · Express.js · TypeScript · SQL · MongoDB · AWS (EC2, S3, Lambda, IAM) · GPT/LLMs · RAG Pipelines*  
+  *Angular · Node.js · Express.js · TypeScript · SQL · MongoDB · AWS (EC2, S3, Lambda, IAM) · GPT/LLMs · RAG Pipelines · Pentaho DTI*  
 
 - 🎓 **Web Developer Scholarship Holder @ PUCTEC** *(Jul 2023 – Dec 2023)*  
   *HTML · CSS · JavaScript · Bootstrap · PHP · Laravel · WordPress · MySQL · Git*  
@@ -851,337 +851,481 @@ clicks: 3
   <img v-click="[3]" src="./photos/balancear/02_test_totalRequest_upstream.png" class="absolute inset-0 w-full h-full object-contain">
 </div>
 
----
 
 ---
 
-# Themes
+## TLS Termination
 
-Slidev comes with powerful theming support. Themes can provide styles, layouts, components, or even configurations for tools. Switching between themes by just **one edit** in your frontmatter:
+- Terminates HTTPS at the proxy; forwards HTTP to upstreams
+- Centralizes certificates and policies at the edge
+- Offloads crypto from upstream apps; simplifies their config
+- Enables HTTP Strict Transport Security(HSTS), modern TLS, and consistent security posture
 
-<div grid="~ cols-2 gap-2" m="t-2">
-
-```yaml
----
-theme: default
----
-```
-
-```yaml
----
-theme: seriph
----
-```
-
-<img border="rounded" src="https://github.com/slidevjs/themes/blob/main/screenshots/theme-default/01.png?raw=true" alt="">
-
-<img border="rounded" src="https://github.com/slidevjs/themes/blob/main/screenshots/theme-seriph/01.png?raw=true" alt="">
-
-</div>
-
-Read more about [How to use a theme](https://sli.dev/guide/theme-addon#use-theme) and
-check out the [Awesome Themes Gallery](https://sli.dev/resources/theme-gallery).
+<img  src="./photos/haproxy-ssl-termination-diagram.png" class="">
 
 ---
 
-# Clicks Animations
+### TLS Termination Implementation in FCReverseProxy
 
-You can add `v-click` to elements to add a click animation.
+- **Server Setup**: `main.go` initializes the proxy and invokes `startServer` with the root handler.
+- **TLS Activation**: `startServer` enables HTTPS if `config.tls.enabled` is true.
+  - Looks for `tls.certFile` and `tls.keyFile` (defaults: `server.crt`/`server.key`).
+  - Missing files trigger auto-generation of a self-signed certificate (RSA 2048, 1-year validity, `localhost` DNS SAN).
+  - Self-signed certificates are for **development only**; use real certificates in production.
+- **TLS Configuration**:
+  - Minimum version: TLS 1.2.
+  - Cipher suites follow Go’s secure defaults.
+  - HTTP/2 is supported via ALPN.
+  - Read/Write timeouts mitigate slowloris attacks.
+- **Security Posture**:
+  - Centralized termination ensures consistent TLS policies.
+  - No mTLS or OCSP stapling yet; planned for future updates.
+  - No built-in ACME/Let’s Encrypt support; recommended for production automation.
 
-<div v-click>
-
-This shows up when you click the slide:
-
-```html
-<div v-click>This shows up when you click the slide.</div>
-```
-
-</div>
-
-<br>
-
-<v-click>
-
-The <span v-mark.red="3"><code>v-mark</code> directive</span>
-also allows you to add
-<span v-mark.circle.orange="4">inline marks</span>
-, powered by [Rough Notation](https://roughnotation.com/):
-
-```html
-<span v-mark.underline.orange>inline markers</span>
-```
-
-</v-click>
-
-<div mt-20 v-click>
-
-[Learn more](https://sli.dev/guide/animations#click-animation)
-
-</div>
-
----
-
-# Motions
-
-Motion animations are powered by [@vueuse/motion](https://motion.vueuse.org/), triggered by `v-motion` directive.
-
-```html
-<div
-  v-motion
-  :initial="{ x: -80 }"
-  :enter="{ x: 0 }"
-  :click-3="{ x: 80 }"
-  :leave="{ x: 1000 }"
->
-  Slidev
-</div>
-```
-
-<div class="w-60 relative">
-  <div class="relative w-40 h-40">
-    <img
-      v-motion
-      :initial="{ x: 800, y: -100, scale: 1.5, rotate: -50 }"
-      :enter="final"
-      class="absolute inset-0"
-      src="https://sli.dev/logo-square.png"
-      alt=""
-    />
-    <img
-      v-motion
-      :initial="{ y: 500, x: -100, scale: 2 }"
-      :enter="final"
-      class="absolute inset-0"
-      src="https://sli.dev/logo-circle.png"
-      alt=""
-    />
-    <img
-      v-motion
-      :initial="{ x: 600, y: 400, scale: 2, rotate: 100 }"
-      :enter="final"
-      class="absolute inset-0"
-      src="https://sli.dev/logo-triangle.png"
-      alt=""
-    />
-  </div>
-
-  <div
-    class="text-5xl absolute top-14 left-40 text-[#2B90B6] -z-1"
-    v-motion
-    :initial="{ x: -80, opacity: 0}"
-    :enter="{ x: 0, opacity: 1, transition: { delay: 2000, duration: 1000 } }">
-    Slidev
-  </div>
-</div>
-
-<!-- vue script setup scripts can be directly used in markdown, and will only affects current page -->
-<script setup lang="ts">
-const final = {
-  x: 0,
-  y: 0,
-  rotate: 0,
-  scale: 1,
-  transition: {
-    type: 'spring',
-    damping: 10,
-    stiffness: 20,
-    mass: 2
-  }
+<style>
+ul {
+  font-size: 1.0rem;
+  line-height: 1.4;
 }
-</script>
+</style>
 
-<div
-  v-motion
-  :initial="{ x:35, y: 30, opacity: 0}"
-  :enter="{ y: 0, opacity: 1, transition: { delay: 3500 } }">
 
-[Learn more](https://sli.dev/guide/animations.html#motion)
 
-</div>
+
 
 ---
 
-# LaTeX
-
-LaTeX is supported out-of-box. Powered by [KaTeX](https://katex.org/).
-
-<div h-3 />
-
-Inline $\sqrt{3x-1}+(1+x)^2$
-
-Block
-$$ {1|3|all}
-\begin{aligned}
-\nabla \cdot \vec{E} &= \frac{\rho}{\varepsilon_0} \\
-\nabla \cdot \vec{B} &= 0 \\
-\nabla \times \vec{E} &= -\frac{\partial\vec{B}}{\partial t} \\
-\nabla \times \vec{B} &= \mu_0\vec{J} + \mu_0\varepsilon_0\frac{\partial\vec{E}}{\partial t}
-\end{aligned}
-$$
-
-[Learn more](https://sli.dev/features/latex)
-
----
-
-# Diagrams
-
-You can create diagrams / graphs from textual descriptions, directly in your Markdown.
-
-<div class="grid grid-cols-4 gap-5 pt-4 -mb-6">
-
-```mermaid {scale: 0.5, alt: 'A simple sequence diagram'}
+### Flow
+```mermaid {scale: 0.8, theme: 'neutral'}
 sequenceDiagram
-    Alice->John: Hello John, how are you?
-    Note over Alice,John: A typical interaction
+  participant C as Client (HTTPS)
+  participant P as FCReverseProxy (TLS)
+  participant U as Upstream (HTTP)
+
+  C->>P: TLS Handshake + HTTPS Request
+  P-->>C: HTTPS Response
+  P->>U: HTTP Request (decrypted)
+  U-->>P: HTTP Response
 ```
 
-```mermaid {theme: 'neutral', scale: 0.8}
-graph TD
-B[Text] --> C{Decision}
-C -->|One| D[Result 1]
-C -->|Two| E[Result 2]
-```
+<style>
+h1 { color: #2B90B6; }
+ul { line-height: 1.4; }
+</style>
 
-```mermaid
-mindmap
-  root((mindmap))
-    Origins
-      Long history
-      ::icon(fa fa-book)
-      Popularisation
-        British popular psychology author Tony Buzan
-    Research
-      On effectiveness<br/>and features
-      On Automatic creation
-        Uses
-            Creative techniques
-            Strategic planning
-            Argument mapping
-    Tools
-      Pen and paper
-      Mermaid
-```
+---
 
-```plantuml {scale: 0.7}
-@startuml
+### Code Example : `generateSelfSigned`
 
-package "Some Group" {
-  HTTP - [First Component]
-  [Another Component]
+<div class="grid grid-cols-2 gap-6 leading-relaxed">
+
+<div>
+
+```go
+func generateSelfSigned(certPath, keyPath string) error {
+	// Ensure parent directories exist.
+	if err := os.MkdirAll(filepath.Dir(certPath), 0o755); err != nil && filepath.Dir(certPath) != "." {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(keyPath), 0o755); err != nil && filepath.Dir(keyPath) != "." {
+		return err
+	}
+
+	// Generate RSA private key (2048-bit).
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return err
+	}
+
+	// Random serial number.
+	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
+	serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
+	if err != nil {
+		return err
+	}
+
+	// Self-signed cert for localhost (1 year).
+	certTemplate := &x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject: pkix.Name{
+			CommonName:   "localhost",
+			Organization: []string{"auto-generated"},
+		},
+		NotBefore:             time.Now().Add(-1 * time.Minute),
+		NotAfter:              time.Now().Add(365 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		DNSNames:              []string{"localhost"},
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, certTemplate, certTemplate, &privateKey.PublicKey, privateKey)
+	if err != nil {
+		return err
+	}
+
+	// Write cert (PEM).
+	certOut, err := os.Create(certPath)
+	if err != nil {
+		return err
+	}
+	defer certOut.Close()
+	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: certDER}); err != nil {
+		return err
+	}
+
+	// Write key (PEM, 0600).
+	keyOut, err := os.OpenFile(keyPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	defer keyOut.Close()
+	if err := pem.Encode(keyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)}); err != nil {
+		return err
+	}
+
+	log.Printf("Generated self-signed certificate (%s, %s) for localhost", certPath, keyPath)
+	return nil
 }
-
-node "Other Groups" {
-  FTP - [Second Component]
-  [First Component] --> FTP
-}
-
-cloud {
-  [Example 1]
-}
-
-database "MySql" {
-  folder "This is my folder" {
-    [Folder 3]
-  }
-  frame "Foo" {
-    [Frame 4]
-  }
-}
-
-[Another Component] --> [Example 1]
-[Example 1] --> [Folder 3]
-[Folder 3] --> [Frame 4]
-
-@enduml
 ```
 
 </div>
 
-Learn more: [Mermaid Diagrams](https://sli.dev/features/mermaid) and [PlantUML Diagrams](https://sli.dev/features/plantuml)
+<div>
+
+### Observations
+- Generates a 2048-bit RSA key and self-signed X.509 cert for localhost.
+- Validity: 1 year; slight backdate to avoid clock skew.
+- Ensures directories exist; writes PEM files (key with 0600 perms).
+- Used when TLS is enabled but cert/key are missing; intended for development.
+
+</div>
+
+</div>
 
 ---
-foo: bar
-dragPos:
-  square: 691,32,167,_,-16
+
+### Code Example : `startServer`
+
+<div class="grid grid-cols-2 gap-6 leading-relaxed">
+
+<div>
+
+```go
+func startServer(appConfig *config.Config, rootHandler http.Handler) error {
+  if !appConfig.TLS.Enabled {
+    // Plain HTTP mode
+    log.Printf("Starting HTTP on %s", appConfig.ListenAddr)
+    return http.ListenAndServe(appConfig.ListenAddr, rootHandler)
+  }
+
+  // Ensure there is a certificate pair available (create self-signed if missing).
+  if err := ensureSelfSignedIfMissing(appConfig.TLS.CertFile, appConfig.TLS.KeyFile); err != nil {
+    log.Printf("TLS enabled but could not create self-signed cert: %v (falling back to HTTP)", err)
+    return http.ListenAndServe(appConfig.ListenAddr, rootHandler)
+  }
+
+  // If cert/key exist, start HTTPS with a conservative TLS configuration.
+  if fileExists(appConfig.TLS.CertFile) && fileExists(appConfig.TLS.KeyFile) {
+    server := &http.Server{
+      Addr:         appConfig.ListenAddr,
+      Handler:      rootHandler,
+      ReadTimeout:  15 * time.Second,
+      WriteTimeout: 30 * time.Second,
+      TLSConfig: &tls.Config{
+        MinVersion: tls.VersionTLS12,
+      },
+    }
+    log.Printf("Starting HTTPS (static/self-signed) on %s cert=%s key=%s", appConfig.ListenAddr, appConfig.TLS.CertFile, appConfig.TLS.KeyFile)
+    return server.ListenAndServeTLS(appConfig.TLS.CertFile, appConfig.TLS.KeyFile)
+  }
+}
+```
+
+</div>
+
+<div>
+
+### Observations
+- **Plain HTTP Mode**: Starts an HTTP server if TLS is disabled.
+- **Default Certificate Handling**: Uses `server.crt` and `server.key` as defaults if no certificate paths are provided.
+- **Fallback to HTTP**: Falls back to HTTP if certificate generation fails or files are missing.
+- **TLS Configuration**:
+  - Configures read and write timeouts to enhance security and prevent slowloris attacks.
+
+</div>
+
+</div>
+
+
+
 ---
 
-# Draggable Elements
 
-Double-click on the draggable elements to edit their positions.
+### TLS Termination — Test
 
-<br>
+Validates TLS config parsing and a basic HTTPS handshake path.
 
-###### Directive Usage
+<style>
+table { font-size: 0.80rem; line-height: 1.15; }
+</style>
 
-```md
-<img v-drag="'square'" src="https://sli.dev/logo.png">
+| Test | Purpose | Validates |
+|------|---------|-----------|
+| `TestTLSConfig_StaticCert_EnvParsing` | Loads config with TLS enabled and static cert/key | - `cfg.TLS.Enabled == true` <br> - Cert/Key file paths parsed and normalized <br> - Default config path resolution (`./configs/config.yaml`) |
+| `TestTLS_StaticHandshake` | Starts HTTPS server with self-signed cert and performs a request | - 200 OK response <br> - TLS connection state present (`resp.TLS != nil`) <br> - Peer certificate available (`len(resp.TLS.PeerCertificates) > 0`) |
+
+Key assertions
+- Config loader correctly reads TLS fields (enabled, cert_file, key_file).
+- Static TLS handshake succeeds with valid response and populated TLS state.
+---
+clicks: 3
+---
+
+### TLS Termination — Results from Demo Environment
+
+- **Requests**: Simulated using `curl` on a Windows 10 environment.
+
+<!-- Fixed title block -->
+<div class="relative h-8 text-xl font-semibold mt-4">
+  <div v-click="[1]" class="absolute inset-0">Successful Request with Correct Certificate</div>
+  <div v-click="[2]" class="absolute inset-0">Request Without Certificate</div>
+  <div v-click="[3]" class="absolute inset-0">Request with Incorrect Certificate</div>
+</div>
+
+<!-- Fixed image block -->
+<div class="relative w-full h-[400px] mt-4">
+  <img v-click="[1]" src="./photos/tls/03_ok.png" class="absolute inset-0 w-full h-full object-contain">
+  <img v-click="[2]" src="./photos/tls/03_notOk_without.png" class="absolute inset-0 w-full h-full object-contain">
+  <img v-click="[3]" src="./photos/tls/03_notOk_with.png" class="absolute inset-0 w-full h-full object-contain">
+</div>
+
+
+
+---
+
+## Request Queue
+
+- Backpressure with a bounded queue and a concurrency limiter  
+- Prevents overload, isolates latency spikes, and improves resilience
+
+---
+
+### Request Queue
+
+- Bounded queue controls admission under high load
+- Concurrency limiter caps simultaneous upstream requests
+- Timeout and client cancel aware while waiting
+- Emits optional observability headers
+- Exposes Prometheus metrics (depth, timeouts, rejections, wait)
+
+---
+
+### Request Queue Implementation in FCReverseProxy
+
+- Enqueue
+  - If queue is full → 429 Too Many Requests
+  - Else enter queue and start wait timer
+- Acquire slot
+  - Competes for a concurrency slot while waiting
+- Exit conditions
+  - Client canceled → 503 (cancelled while waiting)
+  - Timeout → 503 (timed out while waiting)
+  - Slot acquired → proceed to upstream
+- Headers (optional)
+  - X-Concurrency-Limit, X-Queue-Limit, X-Queue-Depth, X-Queue-Wait
+- Metrics
+  - queue_depth, queue_rejected_total, queue_timeouts_total, queue_wait_seconds
+
+---
+
+### Code Example: `WithQueue`
+
+<div class="grid grid-cols-2 gap-6 leading-relaxed">
+<div>
+
+```go
+// From internal/proxy/queue.go (simplified)
+func WithQueue(next http.Handler, cfg QueueConfig) http.Handler {
+  // ...existing code...
+  queueWaitCh   := make(chan struct{}, cfg.MaxQueue)      // queued only
+  activeSlotsCh := make(chan struct{}, cfg.MaxConcurrent) // active handlers
+
+  return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+    enqueueStart := time.Now()
+
+    // Try enqueue; reject immediately if full.
+    select {
+    case queueWaitCh <- struct{}{}:
+    default:
+      // metrics: QueueRejectedInc()
+      http.Error(w, "queue full, try again later", http.StatusTooManyRequests)
+      return
+    }
+
+    // Wait for an active slot vs timeout/client-cancel.
+    // ...existing code...
+    activeGrantedCh := make(chan struct{}, 1)
+    go func() {
+      select {
+      case activeSlotsCh <- struct{}{}:
+        activeGrantedCh <- struct{}{}
+      case <-r.Context().Done():
+      }
+    }()
+
+    timer := time.NewTimer(cfg.EnqueueTimeout)
+    defer timer.Stop()
+
+    select {
+    case <-r.Context().Done():
+      // metrics: QueueWaitObserve(...)
+      failQueue(w, r.Context().Err()) // 503
+      return
+    case <-timer.C:
+      // metrics: QueueTimeoutsInc()
+      failQueue(w, context.DeadlineExceeded) // 503
+      return
+    case <-activeGrantedCh:
+      // Proceed: leave queue, become active.
+    }
+
+    <-queueWaitCh
+    defer func() { <-activeSlotsCh }()
+
+    if cfg.QueueWaitHeader {
+      w.Header().Set("X-Concurrency-Limit", strconv.Itoa(cfg.MaxConcurrent))
+      w.Header().Set("X-Queue-Limit", strconv.Itoa(cfg.MaxQueue))
+      // ...existing code to set X-Queue-Depth and X-Queue-Wait...
+    }
+
+    next.ServeHTTP(w, r)
+  })
+}
 ```
 
-<br>
+</div>
+<div>
 
-###### Component Usage
+Observations
+- Immediate 429 when queue capacity is exceeded
+- 503 on timeout or client cancel while waiting
+- Active slots bounded by MaxConcurrent
+- Accurate wait measurement and depth tracking
+- Headers are opt-in via QueueConfig.QueueWaitHeader
+</div>
+</div>
 
-```md
-<v-drag text-3xl>
-  <div class="i-carbon:arrow-up" />
-  Use the `v-drag` component to have a draggable container!
-</v-drag>
+---
+
+### Code Example: Request Queue Integration
+
+- main.go
+  - reverseProxy = reverseProxy.WithQueue(appConfig.Queue)
+- QueueConfig
+  - MaxQueue: max waiting requests
+  - MaxConcurrent: max concurrent upstreams
+  - EnqueueTimeout: max wait before rejection
+  - QueueWaitHeader: enable observability headers
+
+```go
+// From cmd/server/main.go (simplified)
+queueConfig := appConfig.Queue
+reverseProxy = reverseProxy.WithQueue(queueConfig)
 ```
 
-<v-drag pos="663,206,261,_,-15">
-  <div text-center text-3xl border border-main rounded>
-    Double-click me!
+---
+
+### Request Flow with Queue
+
+<div class="flex flex-col items-center">
+  <img src="./photos/withQueu diagram.png" alt="Request Flow with Queue Diagram" class="queue-diagram">
+</div>
+
+<style>
+.queue-diagram {
+  max-height: 450px;
+  max-width: 750px;
+}
+</style>
+
+
+---
+
+### Request Queue — Test
+
+<style>
+table {
+  font-size: 0.70rem;
+  line-height: 1.1;
+}
+</style>
+
+| Test Category                         | Description                                                                                   | Function                                      |
+|--------------------------------------|-----------------------------------------------------------------------------------------------|-----------------------------------------------|
+| Concurrency limit and queueing       | Respects MaxConcurrent; allows up to MaxQueue queued; overflow returns 429; headers optional | TestQueue_ConcurrencyLimitAndQueueing         |
+| Timeout while waiting in queue       | Queued request exceeds EnqueueTimeout and returns 503                                         | TestQueue_TimeoutWhileWaiting                 |
+| Client cancellation while queued     | Client cancels context while queued and receives 503                                          | TestQueue_ClientCancellationWhileQueued       |
+
+These tests validate bounded concurrency, proper queuing behavior, and correct error paths (429, 503) under timeout/cancel.
+
+---
+clicks: 3
+---
+
+### Request Queue — Results from Demo Environment
+
+<div class="relative h-8 text-xl font-semibold mt-4">
+  <div v-click="[1]" class="absolute inset-0">Setup and Simulated Load</div>
+  <div v-click="[2]" class="absolute inset-0">Configuration</div>
+  <div v-click="[3]" class="absolute inset-0">Results</div>
+</div>
+
+<div class="relative w-full h-[400px] mt-4">
+  <div v-click="[1]" class="absolute inset-0">
+    <p>1. <strong>Setup</strong>: Load the configuration and initialize the HTTP client with a timeout slightly longer than the server's <code>enqueueTimeout</code>.</p>
+    <p>2. <strong>Simulated Load</strong>: Generate a number of concurrent requests slightly below the total capacity (<code>maxQueue + maxConcurrent - 1</code>) to ensure requests are queued but not rejected.</p>
   </div>
-</v-drag>
-
-<img v-drag="'square'" src="https://sli.dev/logo.png">
-
-###### Draggable Arrow
-
-```md
-<v-drag-arrow two-way />
-```
-
-<v-drag-arrow pos="67,452,253,46" two-way op70 />
-
----
-src: ./pages/imported-slides.md
-hide: false
----
-
----
-
-# Monaco Editor
-
-Slidev provides built-in Monaco Editor support.
-
-Add `{monaco}` to the code block to turn it into an editor:
-
-```ts {monaco}
-import { ref } from 'vue'
-import { emptyArray } from './external'
-
-const arr = ref(emptyArray(10))
-```
-
-Use `{monaco-run}` to create an editor that can execute the code directly in the slide:
-
-```ts {monaco-run}
-import { version } from 'vue'
-import { emptyArray, sayHello } from './external'
-
-sayHello()
-console.log(`vue ${version}`)
-console.log(emptyArray<number>(10).reduce(fib => [...fib, fib.at(-1)! + fib.at(-2)!], [1, 1]))
-```
+  <div v-click="[2]" class="absolute inset-0">
+    <pre><code>queue:
+  # Maximum number of requests allowed to wait when max_concurrent is reached.
+  max_queue: 50
+  # Maximum number of requests processed concurrently (across all targets).
+  max_concurrent: 5
+  # Maximum time a request may spend waiting in the queue before timing out with 503.
+  enqueue_timeout: "5ms"
+  # If true, add headers like X-Queue-Wait to admitted requests for observability.
+  queue_wait_header: true
+</code></pre>
+  </div>
+  <div v-click="[3]" class="absolute inset-0">
+    <div class="w-full flex justify-center mt-6">
+      <img src="./photos/queue/04_test_queu_results.png" alt="Request Queue — Results from Demo Environment" class="max-h-[350px] object-contain" />
+    </div>
+  </div>
+</div>
 
 ---
-layout: center
-class: text-center
+
+## Tests Not Previously Highlighted
+<style>
+table {
+  font-size: 0.70rem;
+  line-height: 1.1;
+}
+</style>
+
+| Test Category                                | Description                                                                 | Function(s)                         |
+|----------------------------------------------|-----------------------------------------------------------------------------|-------------------------------------|
+| Proxy RR with Cache (Integration)            | Round Robin selection correctness with cache in the path.                   | TestProxyRoundRobinWithCache        |
+| LC under Mixed Latency (Integration)         | Least Connections prefers faster backends under varied latency.             | TestProxyLeastConnections           |
+| HTTPS Self-signed (Integration)              | Proxy serves over HTTPS using generated self-signed certificate.            | TestProxyOverHTTPS                  |
+| TLS Cert/Key Mismatch Rejection (Integration)| Startup/handshake fails when cert/key mismatch is detected.                 | TestTLSCertKeyMismatch              |
+| High Volume Burst with Queue Limits (Load)   | High-volume burst honors queue + concurrency limits; only 200/429 returned. | TestHighVolume                      |
+
 ---
 
-# Learn More
+## Metrics, Logging, and Dashboards
 
-[Documentation](https://sli.dev) · [GitHub](https://github.com/slidevjs/slidev) · [Showcases](https://sli.dev/resources/showcases)
+This section will be demonstrated live during the presentation. Stay tuned for a working demo showcasing these features in action!
 
-<PoweredBySlidev mt-10 />
