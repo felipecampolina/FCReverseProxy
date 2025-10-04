@@ -12,8 +12,11 @@ drawings:
 # slide transition: https://sli.dev/guide/animations.html#slide-transitions
 transition: slide-left
 # enable MDC Syntax: https://sli.dev/features/mdc
+
 mdc: true
 ---
+
+
 
 # FCReverseProxy
 
@@ -31,30 +34,53 @@ mdc: true
 The last comment block of each slide will be treated as slide notes. It will be visible and editable in Presenter Mode along with the slide. [Read more in the docs](https://sli.dev/guide/syntax.html#notes)
 -->
 
----
-layout: two-cols
-layoutClass: gap-16
----
-
-# Table of contents
-
-<Toc text-sm minDepth="1" maxDepth="5" />
-
 
 ---
-theme: default
 layout: center
 class: text-center
 ---
 
 # About Myself
 
-👨‍💻 **Felipe Campolina**  
+**Felipe Campolina Soares de Paula**  
 *Software Engineer / Full Stack Developer*  
 
 ---
 
+##  Education
+### Bachelor in Computer Science  
+**Pontifical Catholic University of Minas Gerais**  
+*(2022 – 2026)*  
+
+
+### Bachelor in Computer Engineering  
+**Polytechnic Institute of Guarda, Portugal**  
+*(2025 – 2026)*  
+
+<style>
+h2 {
+  color: #2B90B6;
+  margin-bottom: 0.2rem;
+}
+h3 {
+  margin-top: 0.1rem;
+  color: #146b8c;
+}
+</style>
+
+---
+
 ##  Experience
+<style>
+h2 {
+  color: #2B90B6;
+  margin-bottom: 0.2rem;
+}
+h3 {
+  margin-top: 0.1rem;
+  color: #146b8c;
+}
+</style>
 -  **Full Stack Developer @ Biobyte Brasil** *(Feb 2024 – Present)*  
   *Angular · Node.js · Express.js · TypeScript · SQL · MongoDB · AWS (EC2, S3, Lambda, IAM) · GPT/LLMs · RAG Pipelines · Pentaho DTI*  
 
@@ -67,33 +93,8 @@ class: text-center
 -  **Technical Tutor @ PUC Minas** *(Jun 2022 – Jul 2023)*  
   *C · C++ · Java · Programming Fundamentals · Algorithms*  
 
----
-
-##  Education
-
-###  B.Sc. Computer Science  
-**Pontifical Catholic University of Minas Gerais (PUC Minas)**  
-*(2022 – 2026)*  
-
-
-###  B.Sc. Computer Engineering  
-**Polytechnic Institute of Guarda (IPG – Portugal)**  
-*(2025 – 2026)*  
-
-<style>
-h2 {
-  color: #2B90B6;
-  margin-bottom: 1.2rem;
-}
-h3 {
-  margin-top: 1.2rem;
-  color: #146b8c;
-}
-</style>
-
 
 ---
-theme: default
 layout: center
 class: text-center
 ---
@@ -121,7 +122,16 @@ But how is a **forward proxy** different from a **reverse proxy**?
 - Can perform **load balancing**, **SSL termination**, **firewall filtering**  
 
  Example: Users connect to `proxy.myapp.com` which forwards requests to multiple backend servers  
-
+<style>
+h2 {
+  color: #2B90B6;
+  margin-bottom: 0.2rem;
+}
+h3 {
+  margin-top: 0.1rem;
+  color: #146b8c;
+}
+</style>
 ---
 
 ## Why Use a Reverse Proxy?
@@ -147,11 +157,20 @@ table {
 </style>
 
 ---
-theme: default
 layout: center
 class: text-center
 ---
 
+<style>
+h2 {
+  color: #2B90B6;
+  margin-bottom: 0.2rem;
+}
+h3 {
+  margin-top: 0.1rem;
+  color: #146b8c;
+}
+</style>
 # FCReverseProxy
 
 **My solution for the Traefik Challenge**
@@ -173,6 +192,17 @@ table {
 }
 </style>
 
+<style>
+h2 {
+  color: #2B90B6;
+  margin-bottom: 0.2rem;
+}
+h3 {
+  margin-top: 0.1rem;
+  color: #146b8c;
+}
+</style>
+
 | Category | Description |
 |----------|-------------|
 | **Caching** | - In-memory LRU cache <br> - Configurable cache size |
@@ -186,14 +216,40 @@ table {
 
 ---
 
-
 ## Caching
 
-- Improves response times by storing previously fetched responses in memory.
-- Reduces load on backend servers by serving frequent requests from cache.
-- Useful for high-read, low-change workloads (e.g., static content, APIs with repeated queries).
+<div class="grid grid-cols-2 gap-6 leading-relaxed">
 
+<div>
 
+### Benefits
+- **Improves Response Times**: Serves frequent requests from memory.
+- **Reduces Backend Load**: Minimizes repeated processing for identical requests.
+- **Enhances Scalability**: Handles high-read, low-change workloads efficiently.
+
+</div>
+
+<div>
+
+### Use Cases
+- **Static Content**: Websites with unchanging assets (e.g., images, CSS, JS).
+- **APIs with Repeated Queries**: Frequently accessed endpoints with predictable responses.
+- **High-Traffic Applications**: Systems requiring low latency and high throughput.
+
+</div>
+
+</div>
+
+<style>
+h2 {
+  color: #2B90B6;
+  margin-bottom: 0.2rem;
+}
+h3 {
+  margin-top: 0.1rem;
+  color: #146b8c;
+}
+</style>
 
 ---
 
@@ -202,7 +258,7 @@ table {
 - **Type**: In-memory LRU (Least Recently Used) cache.
 - **Key Features**:
   - Configurable cache size.
-  - TTL (Time-to-Live) for cached entries for non cache response.
+  - TTL (Time-to-Live) defines how long cached entries remain valid. For responses that are not cached, the `max-age` directive should be configured in the backend.
   - Cache HIT/MISS tracking.
 
 ---
@@ -259,38 +315,36 @@ table {
 
 ###  Code Example: `isCacheableRequest`
 
-<div class="grid grid-cols-2 gap-6 leading-relaxed">
+<div class="grid grid-cols-10 gap-6 leading-relaxed">
 
-<div>
+<div class="col-span-6">
 
 ```go
 func isCacheableRequest(req *http.Request) bool {
-	cacheControl := parseCacheControl(req.Header.Get("Cache-Control"))
+  cacheControl := parseCacheControl(req.Header.Get("Cache-Control"))
 
-	// Respect explicit client directives.
-	if _, ok := cacheControl["no-store"]; ok {
-		return false
-	}
-	if _, ok := cacheControl["no-cache"]; ok {
-		return false
-	}
+  // Respect explicit client directives.
+  if _, ok := cacheControl["no-store"]; ok {
+    return false
+  }
+  if _, ok := cacheControl["no-cache"]; ok {
+    return false
+  }
 
-	// Heuristic: avoid caching when Authorization is present
-	// unless "public" is provided.
-	if req.Header.Get("Authorization") != "" {
-		if _, isPublic := cacheControl["public"]; !isPublic {
-			return false
-		}
-	}
-	return true
+  // Heuristic: avoid caching when Authorization is present
+  // unless "public" is provided.
+  if req.Header.Get("Authorization") != "" {
+    if _, isPublic := cacheControl["public"]; !isPublic {
+      return false
+    }
+  }
+  return true
 }
 ```
 
 </div>
 
-<div>
-
-### Observation
+<div class="col-span-4">
 
 - HTTP requests with `Authorization` headers usually **should not be cached** to avoid leaking sensitive data.
 - This logic allows an exception:
@@ -305,9 +359,9 @@ func isCacheableRequest(req *http.Request) bool {
 
 ###  Code Example: `buildCacheKey`
 
-<div class="grid grid-cols-2 gap-6 leading-relaxed">
+<div class="grid grid-cols-10 gap-6 leading-relaxed">
 
-<div>
+<div class="col-span-7">
 
 ```go
 func buildCacheKey(req *http.Request) string {
@@ -332,14 +386,13 @@ func buildCacheKey(req *http.Request) string {
 
 </div>
 
-<div>
+<div class="col-span-3">
 
-### Observations
+
 
 - This function generates a **unique cache key** per request based on:
   - HTTP method, URL scheme, host, path, and query string.
   - Headers like `Accept` and `Accept-Encoding` for content negotiation.
-- Ensures that different client variants (e.g. `gzip`, `json`) do **not share** the same cached response.
 - The consistent structure enables safe reuse of cached entries **across upstream targets**.
 
 
@@ -352,13 +405,16 @@ func buildCacheKey(req *http.Request) string {
 
 ###  Code Example: Body Hashing
 
-This section is part of the `serveHTTP` function, which handles requests forwarded to the upstream server. Below is the cache-specific logic extracted from the function:
 
-<div class="grid grid-cols-2 gap-6 leading-relaxed">
 
-<div>
+<div class="grid grid-cols-10 gap-6 leading-relaxed">
+
+<div class="col-span-7">
 
 ```go
+//This section is part of the `serveHTTP` function, 
+// which handles requests forwarded to the upstream server. 
+// Below is the cache-specific logic extracted from the function
 // Buffer body for hashing
 func (proxy *ReverseProxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 var bodyHash string
@@ -384,13 +440,9 @@ req = req.WithContext(context.WithValue(req.Context(), cacheKeyCtxKey{}, cacheKe
 
 </div>
 
-<div>
-
-### Observations
-
+<div class="col-span-3">
 
 - If body hashing is used, the body hash is appended separately (`|bh=...`).
-- To uniquely identify them, we hash the body and append it to the cache key.
 - This ensures that even requests to the same URL with **different bodies** produce **distinct cache entries**.
 - The body is safely **restored** after reading to avoid breaking the request flow.
 
@@ -402,31 +454,34 @@ req = req.WithContext(context.WithValue(req.Context(), cacheKeyCtxKey{}, cacheKe
 
 ###  Code Example: Cache HIT
 
-This section is part of the `serveHTTP` function, which handles requests forwarded to the upstream server. Below is the cache-specific logic extracted from the function:
 
-<div class="grid grid-cols-2 gap-6 leading-relaxed">
 
-<div>
+<div class="grid grid-cols-10 gap-6 leading-relaxed">
+
+<div class="col-span-7">
 
 ```go
+//This section is part of the `serveHTTP` function, which handles requests 
+//forwarded to the upstream server. Below is the cache-specific 
+//logic extracted from the function:
 func (proxy *ReverseProxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-if cachedEntry, found, isStale := proxy.cache.Get(cacheKey); found && !isStale {
-  copyHeader(w.Header(), cachedEntry.Header)
-  w.Header().Set("X-Cache", "HIT")
-  ageSeconds := int(time.Since(cachedEntry.StoredAt).Seconds())
-  w.Header().Set("Age", strconv.Itoa(max(0, ageSeconds)))
-  w.WriteHeader(cachedEntry.StatusCode)
-  _, _ = w.Write(cachedEntry.Body)
-  return
-}
+  if cachedEntry, found, isStale := proxy.cache.Get(cacheKey); found && !isStale {
+    copyHeader(w.Header(), cachedEntry.Header)
+    w.Header().Set("X-Cache", "HIT")
+    ageSeconds := int(time.Since(cachedEntry.StoredAt).Seconds())
+    w.Header().Set("Age", strconv.Itoa(max(0, ageSeconds)))
+    w.WriteHeader(cachedEntry.StatusCode)
+    _, _ = w.Write(cachedEntry.Body)
+    return
+  }
 }
 ```
 
 </div>
 
-<div>
+<div class="col-span-3">
 
-### Observations
+
 
 - **Retrieves** entry from in-memory cache if found and not stale.
 - Sends:
@@ -441,13 +496,15 @@ if cachedEntry, found, isStale := proxy.cache.Get(cacheKey); found && !isStale {
 
 ###  Code Example: Cache MISS
 
-This section is part of the `serveUpstream` function, which handles requests forwarded to the upstream server. Below is the cache-specific logic extracted from the function:
 
-<div class="grid grid-cols-2 gap-6 leading-relaxed">
+<div class="grid grid-cols-10 gap-6 leading-relaxed">
 
-<div>
+<div class="col-span-7">
 
 ```go
+//This section is part of the `serveUpstream` function, which handles 
+//requests forwarded to the upstream server. 
+//Below is the cache-specific logic extracted from the function:
 func (proxy *ReverseProxy) serveUpstream(w http.ResponseWriter, req *http.Request) {
   // Response from upstream, potentially cached if eligible
   isRequestEligibleForCache := proxy.cacheOn && isCacheableRequest(outboundReq) && !clientNoCache(outboundReq)
@@ -471,9 +528,8 @@ func (proxy *ReverseProxy) serveUpstream(w http.ResponseWriter, req *http.Reques
 
 </div>
 
-<div>
+<div class="col-span-3">
 
-### Observations
 - **Sets**:
   - `X-Cache: MISS` if the response is eligible for caching.
   - `X-Cache: BYPASS` if caching is not applicable.
@@ -486,9 +542,13 @@ func (proxy *ReverseProxy) serveUpstream(w http.ResponseWriter, req *http.Reques
 
 ---
 
-###  How does a request goes to upstream?
+### How Does a Request Go to Upstream?
 
-<div class="grid grid-cols-2 gap-6">
+<div class="grid grid-cols-2 gap-6 mt-6">
+
+<div>
+
+#### Request Flow (Part 1)
 
 ```mermaid {scale: 0.5, theme: 'neutral'}
 graph TB
@@ -497,6 +557,12 @@ graph TB
   C -->|Health check or method not allowed| D[Direct Response]
   C -->|Valid request| E[Cache HIT Attempt]
 ```
+
+</div>
+
+<div>
+
+#### Request Flow (Part 2)
 
 ```mermaid {scale: 0.5, theme: 'neutral'}
 graph TB
@@ -507,6 +573,8 @@ graph TB
   G -->|Upstream selected| I[Store Upstream in Context]
   I -->|Call serveUpstream| J[Request Reaches Upstream Logic]
 ```
+
+</div>
 
 </div>
 
@@ -530,7 +598,6 @@ table {
 | **Body Hashing**           | Validates unique cache entries for requests with different bodies.          | `TestCache_POST_DifferentBodies_NotHit`                                    |
 | **Allowed Methods**        | Ensures only permitted HTTP methods interact with the cache.                | `TestDisallowedMethod_NoCacheInteraction`, `TestAllowedMethod_CacheWorksWithRestriction` |
 
-These tests ensure correctness, performance, and adherence to HTTP caching standards.
 
 ---
 clicks: 4
@@ -631,17 +698,14 @@ clicks: 4
 
 ### Code Example: `isTargetHealthy`
 
-<div class="grid grid-cols-2 gap-6 leading-relaxed">
+<div class="grid grid-cols-10 gap-6 leading-relaxed">
 
-<div>
+<div class="col-span-7">
 
 ```go
 func isTargetHealthy(targetURL *url.URL) bool {
+  // Simplied function
 	// Build absolute health URL at root (/healthz).
-	scheme := targetURL.Scheme
-	if scheme == "" {
-		scheme = "http"
-	}
 	healthURL := &url.URL{
 		Scheme: scheme,
 		Host:   targetURL.Host,
@@ -665,9 +729,7 @@ func isTargetHealthy(targetURL *url.URL) bool {
 
 </div>
 
-<div>
-
-### Observation
+<div class="col-span-3">
 
 - The function performs a **shallow health check** against the `/healthz` endpoint of each upstream target.
 - It uses the same scheme and issues a **GET request**.
@@ -682,8 +744,8 @@ func isTargetHealthy(targetURL *url.URL) bool {
 
 ### Code Example Round Robin: `Pick`
 
-<div class="grid grid-cols-2 gap-6 leading-relaxed">
-<div>
+<div class="grid grid-cols-10 gap-6 leading-relaxed">
+<div class="col-span-7">
 
 ```go
 func (b *roundRobinBalancer) Pick(previewOnly bool) *url.URL {
@@ -704,7 +766,8 @@ func (b *roundRobinBalancer) Pick(previewOnly bool) *url.URL {
 	for i := uint64(0); i < targetCount; i++ {
 		candidateTarget := b.targets[(startIndex+i)%targetCount]
 		if isTargetHealthy(candidateTarget) {
-			return candidateTarget // Important so if healthy,  does not need to check the others
+			return candidateTarget 
+      // Important so if healthy,  does not need to check the others
 		}
 	}
 	return nil
@@ -712,9 +775,7 @@ func (b *roundRobinBalancer) Pick(previewOnly bool) *url.URL {
 ```
 
 </div>
-<div>
-
-### Observation
+<div class="col-span-3">
 
 - Implements a **simple, fair** rotation through available targets.
 - If `healthChecksEnabled`, it checks for healthy targets in order(worst case).
@@ -729,71 +790,42 @@ func (b *roundRobinBalancer) Pick(previewOnly bool) *url.URL {
 
 ### Code Example Least Connections: `Pick`
 
-<div class="grid grid-cols-2 gap-6 leading-relaxed">
-<div>
+<div class="grid grid-cols-10 gap-6 leading-relaxed">
+<div class="col-span-7">
 
 ```go
 func (b *leastConnectionsBalancer) Pick(previewOnly bool) *url.URL {
-	if len(b.targetStates) == 0 {
-		return nil
-	}
-
-	findCandidates := func(includePending bool) ([]*lcState, bool) {
-		min := int64(math.MaxInt64)
-		cands := []*lcState{}
-		for _, st := range b.targetStates {
-			if b.healthChecksEnabled && !isTargetHealthy(st.upstreamURL) {
-				continue
-			}
-			load := atomic.LoadInt64(&st.activeConnections)
-			if includePending {
-				load += atomic.LoadInt64(&st.pendingSelections)
-			}
-			if load < min {
-				min = load
-				cands = []*lcState{st}
-			} else if load == min {
-				cands = append(cands, st) 
-			}
-		}
-		return cands, len(cands) > 0
-	}
-
-	if previewOnly {
-		if cands, ok := findCandidates(false); ok {
-			return cands[0].upstreamURL
-		}
-		return nil
-	}
-
-	for {
-		cands, ok := findCandidates(true)
-		if !ok {
-			if !b.healthChecksEnabled {
-				for _, st := range b.targetStates {
-					return st.upstreamURL
-				}
-			}
-			return nil
-		}
-		best := cands[0]
-		p := atomic.LoadInt64(&best.pendingSelections)
-		if atomic.CompareAndSwapInt64(&best.pendingSelections, p, p+1) {
-			return best.upstreamURL
-		}
-	}
+  // Simplified Function
+  findCandidates := func(includePending bool) ([]*lcState, bool) {
+    min := int64(math.MaxInt64)
+    cands := []*lcState{}
+    for _, st := range b.targetStates {
+      if b.healthChecksEnabled && !isTargetHealthy(st.upstreamURL) {
+        continue // Skip unhealthy targets if health checks are enabled
+      }
+      load := atomic.LoadInt64(&st.activeConnections)
+      if includePending {
+        load += atomic.LoadInt64(&st.pendingSelections)
+      }
+      if load < min {
+        min = load
+        cands = []*lcState{st} 
+        // Reset candidates with the new minimum load
+      } else if load == min {
+        cands = append(cands, st) 
+        // Add to candidates if load matches the minimum
+      }
+    }
+    return cands, len(cands) > 0
+  }
 }
 ```
 
 </div>
-<div>
-
-### Observation
+<div class="col-span-3">
 
 - Picks the **least loaded** upstream using `activeConnections` and optionally `pendingSelections`.
-- Supports health checks and skips unhealthy backends.
 - Uses **atomic CAS** to safely reserve pending slots under contention.
-- In preview mode, avoids any state mutation.
 - Ideal for **high-concurrency systems** where minimizing overload is key.
 
 </div>
@@ -910,33 +942,14 @@ ul { line-height: 1.4; }
 
 ### Code Example : `generateSelfSigned`
 
-<div class="grid grid-cols-2 gap-6 leading-relaxed">
+<div class="grid grid-cols-10 gap-6 leading-relaxed">
 
-<div>
+<div class="col-span-7">
 
 ```go
 func generateSelfSigned(certPath, keyPath string) error {
-	// Ensure parent directories exist.
-	if err := os.MkdirAll(filepath.Dir(certPath), 0o755); err != nil && filepath.Dir(certPath) != "." {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(keyPath), 0o755); err != nil && filepath.Dir(keyPath) != "." {
-		return err
-	}
-
 	// Generate RSA private key (2048-bit).
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return err
-	}
-
 	// Random serial number.
-	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
-	serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
-	if err != nil {
-		return err
-	}
-
 	// Self-signed cert for localhost (1 year).
 	certTemplate := &x509.Certificate{
 		SerialNumber: serialNumber,
@@ -952,41 +965,18 @@ func generateSelfSigned(certPath, keyPath string) error {
 		DNSNames:              []string{"localhost"},
 	}
 
-	certDER, err := x509.CreateCertificate(rand.Reader, certTemplate, certTemplate, &privateKey.PublicKey, privateKey)
-	if err != nil {
-		return err
-	}
-
+	certDER, err := x509.CreateCertificate(rand.Reader, certTemplate,
+  certTemplate, &privateKey.PublicKey, privateKey)
 	// Write cert (PEM).
-	certOut, err := os.Create(certPath)
-	if err != nil {
-		return err
-	}
-	defer certOut.Close()
-	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: certDER}); err != nil {
-		return err
-	}
-
 	// Write key (PEM, 0600).
-	keyOut, err := os.OpenFile(keyPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return err
-	}
-	defer keyOut.Close()
-	if err := pem.Encode(keyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)}); err != nil {
-		return err
-	}
-
-	log.Printf("Generated self-signed certificate (%s, %s) for localhost", certPath, keyPath)
-	return nil
 }
 ```
 
 </div>
 
-<div>
+<div class="col-span-3">
 
-### Observations
+
 - Generates a 2048-bit RSA key and self-signed X.509 cert for localhost.
 - Validity: 1 year; slight backdate to avoid clock skew.
 - Ensures directories exist; writes PEM files (key with 0600 perms).
@@ -1000,24 +990,19 @@ func generateSelfSigned(certPath, keyPath string) error {
 
 ### Code Example : `startServer`
 
-<div class="grid grid-cols-2 gap-6 leading-relaxed">
+<div class="grid grid-cols-10 gap-6 leading-relaxed">
 
-<div>
+<div class="col-span-7">
 
 ```go
 func startServer(appConfig *config.Config, rootHandler http.Handler) error {
-  if !appConfig.TLS.Enabled {
     // Plain HTTP mode
-    log.Printf("Starting HTTP on %s", appConfig.ListenAddr)
     return http.ListenAndServe(appConfig.ListenAddr, rootHandler)
-  }
 
   // Ensure there is a certificate pair available (create self-signed if missing).
   if err := ensureSelfSignedIfMissing(appConfig.TLS.CertFile, appConfig.TLS.KeyFile); err != nil {
-    log.Printf("TLS enabled but could not create self-signed cert: %v (falling back to HTTP)", err)
     return http.ListenAndServe(appConfig.ListenAddr, rootHandler)
   }
-
   // If cert/key exist, start HTTPS with a conservative TLS configuration.
   if fileExists(appConfig.TLS.CertFile) && fileExists(appConfig.TLS.KeyFile) {
     server := &http.Server{
@@ -1029,7 +1014,6 @@ func startServer(appConfig *config.Config, rootHandler http.Handler) error {
         MinVersion: tls.VersionTLS12,
       },
     }
-    log.Printf("Starting HTTPS (static/self-signed) on %s cert=%s key=%s", appConfig.ListenAddr, appConfig.TLS.CertFile, appConfig.TLS.KeyFile)
     return server.ListenAndServeTLS(appConfig.TLS.CertFile, appConfig.TLS.KeyFile)
   }
 }
@@ -1037,14 +1021,11 @@ func startServer(appConfig *config.Config, rootHandler http.Handler) error {
 
 </div>
 
-<div>
+<div class="col-span-3">
 
-### Observations
-- **Plain HTTP Mode**: Starts an HTTP server if TLS is disabled.
 - **Default Certificate Handling**: Uses `server.crt` and `server.key` as defaults if no certificate paths are provided.
 - **Fallback to HTTP**: Falls back to HTTP if certificate generation fails or files are missing.
-- **TLS Configuration**:
-  - Configures read and write timeouts to enhance security and prevent slowloris attacks.
+- **Timeout Configuration**: Configures read and write timeouts to enhance security and prevent slowloris attacks.
 
 </div>
 
@@ -1068,9 +1049,6 @@ table { font-size: 0.80rem; line-height: 1.15; }
 | `TestTLSConfig_StaticCert_EnvParsing` | Loads config with TLS enabled and static cert/key | - `cfg.TLS.Enabled == true` <br> - Cert/Key file paths parsed and normalized <br> - Default config path resolution (`./configs/config.yaml`) |
 | `TestTLS_StaticHandshake` | Starts HTTPS server with self-signed cert and performs a request | - 200 OK response <br> - TLS connection state present (`resp.TLS != nil`) <br> - Peer certificate available (`len(resp.TLS.PeerCertificates) > 0`) |
 
-Key assertions
-- Config loader correctly reads TLS fields (enabled, cert_file, key_file).
-- Static TLS handshake succeeds with valid response and populated TLS state.
 ---
 clicks: 3
 ---
@@ -1102,15 +1080,6 @@ clicks: 3
 - Backpressure with a bounded queue and a concurrency limiter  
 - Prevents overload, isolates latency spikes, and improves resilience
 
----
-
-### Request Queue
-
-- Bounded queue controls admission under high load
-- Concurrency limiter caps simultaneous upstream requests
-- Timeout and client cancel aware while waiting
-- Emits optional observability headers
-- Exposes Prometheus metrics (depth, timeouts, rejections, wait)
 
 ---
 
@@ -1134,30 +1103,20 @@ clicks: 3
 
 ### Code Example: `WithQueue`
 
-<div class="grid grid-cols-2 gap-6 leading-relaxed">
-<div>
+<div class="grid grid-cols-10 gap-6 leading-relaxed">
+<div class="col-span-7">
 
 ```go
-// From internal/proxy/queue.go (simplified)
 func WithQueue(next http.Handler, cfg QueueConfig) http.Handler {
-  // ...existing code...
-  queueWaitCh   := make(chan struct{}, cfg.MaxQueue)      // queued only
-  activeSlotsCh := make(chan struct{}, cfg.MaxConcurrent) // active handlers
-
   return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-    enqueueStart := time.Now()
-
-    // Try enqueue; reject immediately if full.
+    // Attempt to enqueue the request
     select {
     case queueWaitCh <- struct{}{}:
     default:
-      // metrics: QueueRejectedInc()
       http.Error(w, "queue full, try again later", http.StatusTooManyRequests)
       return
     }
-
-    // Wait for an active slot vs timeout/client-cancel.
-    // ...existing code...
+    // Try to acquire an active slot
     activeGrantedCh := make(chan struct{}, 1)
     go func() {
       select {
@@ -1166,41 +1125,27 @@ func WithQueue(next http.Handler, cfg QueueConfig) http.Handler {
       case <-r.Context().Done():
       }
     }()
-
-    timer := time.NewTimer(cfg.EnqueueTimeout)
-    defer timer.Stop()
-
+    // Handle queue timeout or client cancellation
     select {
     case <-r.Context().Done():
-      // metrics: QueueWaitObserve(...)
-      failQueue(w, r.Context().Err()) // 503
+      http.Error(w, "request canceled", http.StatusServiceUnavailable)
       return
     case <-timer.C:
-      // metrics: QueueTimeoutsInc()
-      failQueue(w, context.DeadlineExceeded) // 503
+      http.Error(w, "queue timeout", http.StatusServiceUnavailable)
       return
     case <-activeGrantedCh:
-      // Proceed: leave queue, become active.
     }
-
+    // Proceed to the next handler
     <-queueWaitCh
     defer func() { <-activeSlotsCh }()
-
-    if cfg.QueueWaitHeader {
-      w.Header().Set("X-Concurrency-Limit", strconv.Itoa(cfg.MaxConcurrent))
-      w.Header().Set("X-Queue-Limit", strconv.Itoa(cfg.MaxQueue))
-      // ...existing code to set X-Queue-Depth and X-Queue-Wait...
-    }
-
     next.ServeHTTP(w, r)
   })
 }
 ```
 
 </div>
-<div>
+<div class="col-span-3">
 
-Observations
 - Immediate 429 when queue capacity is exceeded
 - 503 on timeout or client cancel while waiting
 - Active slots bounded by MaxConcurrent
@@ -1323,7 +1268,28 @@ table {
 This section will be demonstrated live during the presentation. Stay tuned for a working demo showcasing these features in action!
 
 ---
-theme: default
+
+## Next Steps & Improvements
+<style>
+table {
+  font-size: 0.70rem;
+  line-height: 1.1;
+}
+</style>
+| Improvement Area          | Description                                                                 |
+|---------------------------|-----------------------------------------------------------------------------|
+| **Rate Limiting**         | Implement global, per-IP, and per-key throttling to prevent abuse and ensure fair usage. |
+| **Group-Based Scaling**   | Introduce request quotas and scheduling mechanisms by group or tenant to support multi-tenant environments. |
+| **DDoS Mitigation**       | Add dedicated protection strategies beyond basic rate limits for stronger resilience against attacks. |
+| **Advanced Caching**      | Enhance caching with smarter algorithms and policies (e.g., LRU, LFU, adaptive TTLs) to improve performance. |
+| **Cache for Authorization** | Introduce caching for authorization tokens or credentials to reduce repeated validation overhead. |
+| **TLS/SSL Passthrough**   | Support passthrough for encrypted traffic to improve flexibility in secure deployments. |
+| **Protocol Support**      | Extend compatibility to WebSockets, UDP, and TCP for broader application coverage. |
+| **Web Application Firewall (WAF)** | Introduce a baseline set of rules to detect and block malicious patterns and requests. |
+| **Fairer Round-Robin**    | Advance the pointer to the **actual chosen index** (`idx+1`) for fairer round-robin among healthy targets. |
+
+
+---
 layout: center
 class: text-center
 ---
