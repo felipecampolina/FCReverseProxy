@@ -60,10 +60,10 @@ class: text-center
 <style>
 h2 {
   color: #2B90B6;
-  margin-bottom: 0.2rem;
+  margin-bottom: 3.2rem;
 }
 h3 {
-  margin-top: 0.1rem;
+  margin-top: 3.1rem;
   color: #146b8c;
 }
 </style>
@@ -112,7 +112,7 @@ But how is a **forward proxy** different from a **reverse proxy**?
 - Regulates access, blocks unknown traffic  
 - Common in businesses & data centers  
 
- Example: Company proxy that filters employee traffic to the Internet  
+ Analogy: Mailroom clerk sending mail for you
 
 
 ## Reverse Proxy
@@ -121,7 +121,7 @@ But how is a **forward proxy** different from a **reverse proxy**?
 - Clients see only the reverse proxy, not the actual servers  
 - Can perform **load balancing**, **SSL termination**, **firewall filtering**  
 
- Example: Users connect to `proxy.myapp.com` which forwards requests to multiple backend servers  
+ Example: Company front desk sorting incoming mail 
 <style>
 h2 {
   color: #2B90B6;
@@ -139,6 +139,13 @@ h3 {
 - Simplifies server management (servers only accept proxy traffic)  
 - Easy to **add/remove servers** without client changes  
 - Improves performance via **load balancing & caching**  
+
+
+<div class="flex justify-left">
+  <img src="./photos/reversePrxoy.png" class="w-[60%] h-auto object-contain">
+</div>
+
+
 <style>
 h1 {
   background-color: #2B90B6;
@@ -181,14 +188,13 @@ h3 {
 ## Overview
 
 **FCReverseProxy** is a lightweight, high-performance reverse proxy written in Go.
-
 It is designed with scalability, resilience, and observability in mind, featuring:
 
 
 <style>
 table {
-  font-size: 0.70rem;
-  line-height: 1.1;
+  font-size: 0.67rem;
+  line-height: 1.0;
 }
 </style>
 
@@ -209,7 +215,7 @@ h3 {
 | **Load Balancer** | - Round Robin and Least Connections algorithms <br> - Even traffic distribution |
 | **Health Checker** | - Periodic health checks <br> - Auto removal/recovery of backends |
 | **TLS Termination** | - HTTPS support with TLS offloading <br> - Configurable certificates |
-| **Request Queue** | - Request queuing during high load <br> - Configurable queue size and backpressure control |
+| **Request Queue** | - Request queuing <br> - Configurable queue size and concurrency control |
 | **Unit Tests** | - Coverage for core modules <br> - Reliability and correctness validation |
 | **Metrics & Dashboard** | - Prometheus metrics <br> - Grafana dashboard for live monitoring |
 | **Logging** | - Structured logs via Loki and Promtail <br> - Centralized observability |
@@ -217,7 +223,7 @@ h3 {
 ---
 
 ## Caching
-
+Caching is a technique used to store copies of data in a high-speed storage layer, enabling faster access to frequently requested information.
 <div class="grid grid-cols-2 gap-6 leading-relaxed">
 
 <div>
@@ -258,9 +264,13 @@ h3 {
 - **Type**: In-memory LRU (Least Recently Used) cache.
 - **Key Features**:
   - Configurable cache size.
-  - TTL (Time-to-Live) defines how long cached entries remain valid. For responses that are not cached, the `max-age` directive should be configured in the backend.
+  - TTL (Time-to-Live) defines how long cached entries remain valid. For responses that does not have the cache directives like `max-age`.
   - Cache HIT/MISS tracking.
 
+
+<div class="flex justify-left">
+  <img src="./photos/Least-Recently-Used.jpg" class="w-[60%] h-auto object-contain">
+</div>
 ---
 
 ### How It Works
@@ -302,8 +312,8 @@ h3 {
   <h3>4. Cache MISS</h3>
   <ul>
     <li>Forwards request to upstream</li>
-    <li>Validates response with <code>isCacheableResponse</code></li>
-    <li>Stores entry in cache with TTL</li>
+    <li>Validates response .</li>
+    <li>Stores entry in cache.</li>
   </ul>
 </div>
 
@@ -461,9 +471,6 @@ req = req.WithContext(context.WithValue(req.Context(), cacheKeyCtxKey{}, cacheKe
 <div class="col-span-7">
 
 ```go
-//This section is part of the `serveHTTP` function, which handles requests 
-//forwarded to the upstream server. Below is the cache-specific 
-//logic extracted from the function:
 func (proxy *ReverseProxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
   if cachedEntry, found, isStale := proxy.cache.Get(cacheKey); found && !isStale {
     copyHeader(w.Header(), cachedEntry.Header)
@@ -474,6 +481,19 @@ func (proxy *ReverseProxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
     _, _ = w.Write(cachedEntry.Body)
     return
   }
+}
+func (cache *lruCache) Get(cacheKey string) (*CachedResponse, bool, bool) {
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if element, found := cache.items[cacheKey]; found {
+		entry := element.Value.(*lruEntry)
+		cache.lruList.MoveToFront(element)
+		if time.Now().After(entry.val.ExpiresAt) {
+			return entry.val, true, true
+		}
+		return entry.val, true, false
+	}
+	return nil, false, false
 }
 ```
 
@@ -593,7 +613,7 @@ table {
 |----------------------------|-----------------------------------------------------------------------------|-----------------------------------------------------------------------------|
 | **Cache HIT/MISS**         | Verifies cache population on a MISS and reuse on subsequent requests.       | `TestCache_HitAndMiss`                                                     |
 | **Cache-Control Directives** | Ensures compliance with `no-cache` and `no-store` headers.                 | `TestCache_RespectsNoCacheRequestDirective`                                |
-| **TTL Expiry**             | Confirms cache entries expire as per `max-age` and refresh on access.       | `TestCache_ExpiryAndRefetch`                                               |
+| **Max-Age Expiry**             | Confirms cache entries expire as per `max-age` and refresh on access.       | `TestCache_ExpiryAndRefetch`                                               |
 | **Request Methods**        | Tests caching for various HTTP methods.                                     | `TestCache_POST_Hit`, `TestCache_PUT_Hit`, `TestCache_PATCH_Hit`, `TestCache_DELETE_Hit`, `TestCache_HEAD_Hit` |
 | **Body Hashing**           | Validates unique cache entries for requests with different bodies.          | `TestCache_POST_DifferentBodies_NotHit`                                    |
 | **Allowed Methods**        | Ensures only permitted HTTP methods interact with the cache.                | `TestDisallowedMethod_NoCacheInteraction`, `TestAllowedMethod_CacheWorksWithRestriction` |
@@ -850,8 +870,6 @@ table {
 | **Health Checks — LC Tie-break**        | Skips unhealthy; deterministic tie-break among equally loaded healthy targets. | `TestLeastConnectionsBalancerHealthChecks`    |
 | **All Backends Unhealthy**              | Returns nil when no healthy targets are available.                          | `TestRoundRobinBalancerHealthAllUnhealthy`       |
 
-These tests validate fair distribution, correct connection accounting, and resilience under backend failures.
-
 
 
 ---
@@ -865,7 +883,7 @@ clicks: 3
 <!-- Fixed title block -->
 <div class="relative h-8 text-xl font-semibold mt-4">
   <div v-click="[1]" class="absolute inset-0">Proxy Dashboard </div>
-   <div v-click="[2]" class="absolute inset-0">Proxy Dashboard - Total requests by X-Upstream (cumulative)</div>
+   <div v-click="[2]" class="absolute inset-0">Proxy Dashboard - Total requests by X-Upstream</div>
   <div v-click="[3]" class="absolute inset-0">Upstream Dashboard</div>
 </div>
 
@@ -884,7 +902,6 @@ clicks: 3
 - Terminates HTTPS at the proxy; forwards HTTP to upstreams
 - Centralizes certificates and policies at the edge
 - Offloads crypto from upstream apps; simplifies their config
-- Enables HTTP Strict Transport Security(HSTS), modern TLS, and consistent security posture
 
 <img  src="./photos/haproxy-ssl-termination-diagram.png" class="">
 
@@ -903,9 +920,7 @@ clicks: 3
   - HTTP/2 is supported via ALPN.
   - Read/Write timeouts mitigate slowloris attacks.
 - **Security Posture**:
-  - Centralized termination ensures consistent TLS policies.
-  - No mTLS or OCSP stapling yet; planned for future updates.
-  - No built-in ACME/Let’s Encrypt support; recommended for production automation.
+  - Configures read and write timeouts to enhance security and prevent slowloris attacks
 
 <style>
 ul {
@@ -995,6 +1010,7 @@ func generateSelfSigned(certPath, keyPath string) error {
 <div class="col-span-7">
 
 ```go
+//Simplified 
 func startServer(appConfig *config.Config, rootHandler http.Handler) error {
     // Plain HTTP mode
     return http.ListenAndServe(appConfig.ListenAddr, rootHandler)
@@ -1021,11 +1037,11 @@ func startServer(appConfig *config.Config, rootHandler http.Handler) error {
 
 </div>
 
-<div class="col-span-3">
+<div class="col-span-3" style="font-size: 0.90rem; line-height: 1.2;">
 
-- **Default Certificate Handling**: Uses `server.crt` and `server.key` as defaults if no certificate paths are provided.
 - **Fallback to HTTP**: Falls back to HTTP if certificate generation fails or files are missing.
 - **Timeout Configuration**: Configures read and write timeouts to enhance security and prevent slowloris attacks.
+- **TLS Security Improvements**: Add hardened cipher suites, enforce security headers, enable TLS 1.3, automate certificates with Let's Encrypt, and plan for mTLS.
 
 </div>
 
@@ -1041,10 +1057,13 @@ func startServer(appConfig *config.Config, rootHandler http.Handler) error {
 Validates TLS config parsing and a basic HTTPS handshake path.
 
 <style>
-table { font-size: 0.80rem; line-height: 1.15; }
+table {
+  font-size: 0.70rem;
+  line-height: 1.1;
+}
 </style>
 
-| Test | Purpose | Validates |
+| **Test** | **Purpose** | **Validates** |
 |------|---------|-----------|
 | `TestTLSConfig_StaticCert_EnvParsing` | Loads config with TLS enabled and static cert/key | - `cfg.TLS.Enabled == true` <br> - Cert/Key file paths parsed and normalized <br> - Default config path resolution (`./configs/config.yaml`) |
 | `TestTLS_StaticHandshake` | Starts HTTPS server with self-signed cert and performs a request | - 200 OK response <br> - TLS connection state present (`resp.TLS != nil`) <br> - Peer certificate available (`len(resp.TLS.PeerCertificates) > 0`) |
@@ -1094,51 +1113,93 @@ clicks: 3
   - Client canceled → 503 (cancelled while waiting)
   - Timeout → 503 (timed out while waiting)
   - Slot acquired → proceed to upstream
-- Headers (optional)
+- Headers
   - X-Concurrency-Limit, X-Queue-Limit, X-Queue-Depth, X-Queue-Wait
 - Metrics
   - queue_depth, queue_rejected_total, queue_timeouts_total, queue_wait_seconds
 
 ---
 
-### Code Example: `WithQueue`
+### Code Example: `WithQueue` (Part 1)
 
 <div class="grid grid-cols-10 gap-6 leading-relaxed">
 <div class="col-span-7">
 
 ```go
+//Simplified
 func WithQueue(next http.Handler, cfg QueueConfig) http.Handler {
+  //Set sane defaults and set queue and Semaphore for active process
   return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-    // Attempt to enqueue the request
     select {
     case queueWaitCh <- struct{}{}:
+      // Successfully entered the waiting queue, if there is room
     default:
-      http.Error(w, "queue full, try again later", http.StatusTooManyRequests)
-      return
+      // Queue is full, reject request immediately
     }
-    // Try to acquire an active slot
-    activeGrantedCh := make(chan struct{}, 1)
-    go func() {
-      select {
-      case activeSlotsCh <- struct{}{}:
-        activeGrantedCh <- struct{}{}
-      case <-r.Context().Done():
+    isStillQueued := true
+    atomic.AddInt64(&queueDepth, 1)
+    // If request exits early, remove it from queue
+    defer func() {
+      if isStillQueued {
+        <-queueWaitCh
+        atomic.AddInt64(&queueDepth, -1)
       }
     }()
-    // Handle queue timeout or client cancellation
-    select {
-    case <-r.Context().Done():
-      http.Error(w, "request canceled", http.StatusServiceUnavailable)
-      return
-    case <-timer.C:
-      http.Error(w, "queue timeout", http.StatusServiceUnavailable)
-      return
-    case <-activeGrantedCh:
-    }
-    // Proceed to the next handler
-    <-queueWaitCh
-    defer func() { <-activeSlotsCh }()
-    next.ServeHTTP(w, r)
+    // Try to acquire an active slot with timeout and cancellation support
+    reqCtx := r.Context()
+    acquireCtx, cancelAcquire := context.WithCancel(reqCtx)
+    defer cancelAcquire()
+    activeGrantedCh := make(chan struct{}, 1)
+```
+
+</div>
+<div class="col-span-3">
+
+<style>
+ul {
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+</style>
+- Tracks queue depth using an atomic counter for thread safety.
+- Ensures queued requests are removed on early exit.
+- Uses a semaphore to enforce a maximum number of concurrent active requests.
+- Mechanism to acquire active slots with timeout and cancellation support.
+- Proper cleanup of queue and active slot resources after request processing.
+</div>
+</div>
+
+
+
+---
+
+### Code Example: `WithQueue` (Part 2)
+
+<div class="grid grid-cols-10 gap-6 leading-relaxed">
+<div class="col-span-7">
+
+```go
+  select {
+  case <-reqCtx.Done():
+    // Client canceled while waiting
+    return
+  case <-enqueueTimer.C:
+    // Waited too long in queue
+    return
+  case <-activeGrantedCh:
+    // Acquired active slot
+  }
+  // Transition to active processing
+  <-queueWaitCh
+  atomic.AddInt64(&queueDepth, -1)
+  isStillQueued = false
+  // Release active slot after processing
+  defer func() { <-activeSlotsCh }()
+  if cfg.QueueWaitHeader {
+    // Optional: Add debug headers
+  }
+  // Serve the actual request
+  next.ServeHTTP(w, r)
   })
 }
 ```
@@ -1146,11 +1207,20 @@ func WithQueue(next http.Handler, cfg QueueConfig) http.Handler {
 </div>
 <div class="col-span-3">
 
-- Immediate 429 when queue capacity is exceeded
-- 503 on timeout or client cancel while waiting
-- Active slots bounded by MaxConcurrent
-- Accurate wait measurement and depth tracking
-- Headers are opt-in via QueueConfig.QueueWaitHeader
+- Client cancels the request while waiting in the queue and exits gracefully.
+- Transitions requests from the queue to active processing when a concurrency slot becomes available.
+- Dynamically updates the queue depth counter to reflect the current number of waiting requests.
+- Active slots are released after request processing, preventing resource leaks.
+
+
+
+<style>
+ul {
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+</style>
+
 </div>
 </div>
 
@@ -1192,6 +1262,8 @@ reverseProxy = reverseProxy.WithQueue(queueConfig)
 
 ### Request Queue — Test
 
+Validates bounded concurrency, proper queuing behavior, and correct error paths (429, 503) under timeout/cancel.
+
 <style>
 table {
   font-size: 0.70rem;
@@ -1199,13 +1271,11 @@ table {
 }
 </style>
 
-| Test Category                         | Description                                                                                   | Function                                      |
-|--------------------------------------|-----------------------------------------------------------------------------------------------|-----------------------------------------------|
-| Concurrency limit and queueing       | Respects MaxConcurrent; allows up to MaxQueue queued; overflow returns 429; headers optional | TestQueue_ConcurrencyLimitAndQueueing         |
-| Timeout while waiting in queue       | Queued request exceeds EnqueueTimeout and returns 503                                         | TestQueue_TimeoutWhileWaiting                 |
-| Client cancellation while queued     | Client cancels context while queued and receives 503                                          | TestQueue_ClientCancellationWhileQueued       |
-
-These tests validate bounded concurrency, proper queuing behavior, and correct error paths (429, 503) under timeout/cancel.
+| **Test**                          | **Purpose**                                                                 | **Validates**                                                                                     |
+|-----------------------------------|-----------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------|
+| `TestQueue_ConcurrencyLimitAndQueueing` | Ensures MaxConcurrent is respected, allows up to MaxQueue queued, and returns 429 on overflow. | - Requests beyond MaxQueue are rejected with 429. <br> - Optional headers like `X-Queue-Wait` are added. |
+| `TestQueue_TimeoutWhileWaiting`   | Validates behavior when a queued request exceeds EnqueueTimeout.            | - Queued requests exceeding timeout return 503.                                                  |
+| `TestQueue_ClientCancellationWhileQueued` | Tests client cancellation while waiting in the queue.                      | - Client cancellation results in 503. <br> - Queue depth is decremented correctly.               |
 
 ---
 clicks: 3
@@ -1246,6 +1316,9 @@ clicks: 3
 ---
 
 ## Tests Not Previously Highlighted
+
+Validates integration scenarios, edge cases, and load behavior for the proxy.
+
 <style>
 table {
   font-size: 0.70rem;
@@ -1253,13 +1326,14 @@ table {
 }
 </style>
 
-| Test Category                                | Description                                                                 | Function(s)                         |
-|----------------------------------------------|-----------------------------------------------------------------------------|-------------------------------------|
-| Proxy RR with Cache (Integration)            | Round Robin selection correctness with cache in the path.                   | TestProxyRoundRobinWithCache        |
-| LC under Mixed Latency (Integration)         | Least Connections prefers faster backends under varied latency.             | TestProxyLeastConnections           |
-| HTTPS Self-signed (Integration)              | Proxy serves over HTTPS using generated self-signed certificate.            | TestProxyOverHTTPS                  |
-| TLS Cert/Key Mismatch Rejection (Integration)| Startup/handshake fails when cert/key mismatch is detected.                 | TestTLSCertKeyMismatch              |
-| High Volume Burst with Queue Limits (Load)   | High-volume burst honors queue + concurrency limits; only 200/429 returned. | TestHighVolume                      |
+| **Test**                                   | **Purpose**                                                                 | **Validates**                                                                                     |
+|-------------------------------------------|-----------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------|
+| `TestProxyRoundRobinWithCache`            | Round Robin selection correctness with cache in the path.                   | - Ensures cache HIT/MISS does not disrupt Round Robin rotation.                                   |
+| `TestProxyLeastConnections`               | Least Connections prefers faster backends under varied latency.             | - Verifies dynamic load balancing under mixed latency conditions.                                 |
+| `TestProxyOverHTTPS`                      | Proxy serves over HTTPS using generated self-signed certificate.            | - HTTPS handshake succeeds. <br> - Self-signed certificate is valid for `localhost`.              |
+| `TestTLSCertKeyMismatch`                  | Startup/handshake fails when cert/key mismatch is detected.                 | - Proxy refuses to start with mismatched TLS certificate and key.                                 |
+| `TestHighVolume`                          | High-volume burst honors queue + concurrency limits; only 200/429 returned. | - Queue depth and concurrency limits are respected. <br> - Excess requests receive 429 responses. |
+
 
 ---
 
