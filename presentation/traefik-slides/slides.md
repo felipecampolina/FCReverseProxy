@@ -131,9 +131,9 @@ But how is a **forward proxy** different from a **reverse proxy**?
 - Routes traffic **from client → backend servers**  
 - Protects server identity from clients  
 - Clients see only the reverse proxy, not the actual servers  
-- Can perform **load balancing**, **SSL termination**, **firewall filtering**  
+- Can perform **load balancing**, **TLS termination**, **firewall filtering**  
 
- Example: Company front desk sorting incoming mail 
+ Analogy: Company front desk sorting incoming mail 
 <style>
 h2 {
   color: #2B90B6;
@@ -931,8 +931,6 @@ clicks: 3
   - Cipher suites follow Go’s secure defaults.
   - HTTP/2 is supported via ALPN.
   - Read/Write timeouts mitigate slowloris attacks.
-- **Security Posture**:
-  - Configures read and write timeouts to enhance security and prevent slowloris attacks
 
 <style>
 ul {
@@ -1127,8 +1125,6 @@ clicks: 3
   - Slot acquired → proceed to upstream
 - Headers
   - X-Concurrency-Limit, X-Queue-Limit, X-Queue-Depth, X-Queue-Wait
-- Metrics
-  - queue_depth, queue_rejected_total, queue_timeouts_total, queue_wait_seconds
 
 ---
 
@@ -1274,8 +1270,6 @@ reverseProxy = reverseProxy.WithQueue(queueConfig)
 
 ### Request Queue — Test
 
-Validates bounded concurrency, proper queuing behavior, and correct error paths (429, 503) under timeout/cancel.
-
 <style>
 table {
   font-size: 0.70rem;
@@ -1340,8 +1334,7 @@ table {
 
 | **Test**                                   | **Purpose**                                                                 | **Validates**                                                                                     |
 |-------------------------------------------|-----------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------|
-| `TestProxyRoundRobinWithCache`            | Round Robin selection correctness with cache in the path.                   | - Ensures cache HIT/MISS does not disrupt Round Robin rotation.                                   |
-| `TestProxyLeastConnections`               | Least Connections prefers faster backends under varied latency.             | - Verifies dynamic load balancing under mixed latency conditions.                                 |
+| `TestProxyRoundRobinWithCache`            | Round Robin selection correctness with cache in the path.                   | - Ensures cache HIT/MISS does not disrupt Round Robin rotation.                                   |                          |
 | `TestProxyOverHTTPS`                      | Proxy serves over HTTPS using generated self-signed certificate.            | - HTTPS handshake succeeds. <br> - Self-signed certificate is valid for `localhost`.              |
 | `TestTLSCertKeyMismatch`                  | Startup/handshake fails when cert/key mismatch is detected.                 | - Proxy refuses to start with mismatched TLS certificate and key.                                 |
 | `TestHighVolume`                          | High-volume burst honors queue + concurrency limits; only 200/429 returned. | - Queue depth and concurrency limits are respected. <br> - Excess requests receive 429 responses. |
@@ -1367,7 +1360,7 @@ table {
 | **Rate Limiting**         | Implement global, per-IP, and per-key throttling to prevent abuse and ensure fair usage. |
 | **Group-Based Scaling**   | Introduce request quotas and scheduling mechanisms by group or tenant to support multi-tenant environments. |
 | **DDoS Mitigation**       | Add dedicated protection strategies beyond basic rate limits for stronger resilience against attacks. |
-| **Advanced Caching**      | Enhance caching with smarter algorithms and policies (e.g., LRU, LFU, adaptive TTLs) to improve performance. |
+| **Advanced Caching**      | Enhance caching with smarter algorithms and policies (LFU, adaptive TTLs) to improve performance. |
 | **Cache for Authorization** | Introduce caching for authorization tokens or credentials to reduce repeated validation overhead. |
 | **TLS/SSL Passthrough**   | Support passthrough for encrypted traffic to improve flexibility in secure deployments. |
 | **Protocol Support**      | Extend compatibility to WebSockets, UDP, and TCP for broader application coverage. |
