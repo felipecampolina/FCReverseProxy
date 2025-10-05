@@ -30,6 +30,18 @@ mdc: true
   </a>
 </div>
 
+
+<style>
+h2 {
+  color: #2B90B6;
+  margin-bottom: 3.2rem;
+}
+h3 {
+  margin-top: 3.1rem;
+  color: #ffffffff;
+}
+</style>
+
 <!--
 The last comment block of each slide will be treated as slide notes. It will be visible and editable in Presenter Mode along with the slide. [Read more in the docs](https://sli.dev/guide/syntax.html#notes)
 -->
