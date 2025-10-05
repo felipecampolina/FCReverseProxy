@@ -192,5 +192,18 @@ func LogProxyResponseCacheHit(
 
 	// DEBUG: full response and cache diagnostic context
 	Emit("debug", "proxy", labels, debugLine)
+
+	// NEW: Emit error-level for any 4xx/5xx so Promtail/Loki capture them.
+	if status >= 400 {
+		errLine := fmt.Sprintf(
+			"ERROR status=%d bytes=%d dur=%s cache=%s upstream=%s req_id=%s",
+			status, bytesWritten, duration.String(), cacheLabel, upstreamName, req.Header.Get("X-Request-ID"),
+		)
+		// Include response body preview when available.
+		if strings.TrimSpace(respBodyNote) != "" {
+			errLine = errLine + " " + strings.TrimSpace(respBodyNote)
+		}
+		Emit("error", "proxy", labels, errLine)
+	}
 }
 

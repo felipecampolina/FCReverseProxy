@@ -259,6 +259,26 @@ func WithRequestLogging(next http.Handler) http.Handler {
 		Emit("info", "upstream", responseLabels, infoRespMsg)
 		Emit("debug", "upstream", responseLabels, respLine)
 
+		// NEW: Emit an error-level log for any 4xx/5xx response.
+		// This ensures errors like "invalid JSON body" appear in Loki/Promtail.
+		if respStatus >= 400 {
+			errPreview := ""
+			if len(logWriter.respPreview) > 0 {
+				errPreview = fmt.Sprintf(" resp_body_preview=%q", string(logWriter.respPreview))
+			}
+			errorLine := fmt.Sprintf(
+				"ERROR status=%d method=%s url=%s dur=%s upstream=%s req_id=%s%s",
+				respStatus,
+				r.Method,
+				r.URL.RequestURI(),
+				duration.String(),
+				upstreamID,
+				r.Header.Get("X-Request-ID"),
+				errPreview,
+			)
+			Emit("error", "upstream", responseLabels, errorLine)
+		}
+
 		// Record Prometheus metrics for the upstream call.
 		imetrics.ObserveUpstreamResponse(r.Method, respStatus, duration)
 	})
